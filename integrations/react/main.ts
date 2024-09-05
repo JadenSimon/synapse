@@ -36,3 +36,4 @@ const runtime: JSXRuntime<React.ReactNode> = {
 export function createWebsite(props?: { domain?: HostedZone }): WebsiteHost {
     return createWebsiteHost(runtime, props)
 }
+
