@@ -8,6 +8,7 @@
         "config": {
             "sharedLib": true,
             "exposeInternal": true
-        }
+        },
+        "pipeline": {}
     }
 }
