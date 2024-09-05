@@ -9,6 +9,8 @@
             "sharedLib": true,
             "exposeInternal": true
         },
-        "pipeline": {}
+        "pipeline": {
+            "publish": "internal"
+        }
     }
 }
