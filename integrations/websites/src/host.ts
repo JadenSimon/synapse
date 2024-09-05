@@ -630,4 +630,3 @@ export async function openBrowser(url: string) {
         // Can also try different vendor executables e.g. `firefox`
     }
 }
-
