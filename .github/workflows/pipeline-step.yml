@@ -24,6 +24,10 @@ jobs:
       id-token: write
       contents: read
 
+    defaults:
+      run:
+        working-directory: ${{ fromJSON(inputs.step-config).workingDir }}
+
     env:
       SYNAPSE_ENV: ${{ fromJSON(inputs.step-config).environment }}
       SYNAPSE_PIPELINE_DEPS: ${{ fromJSON(inputs.pipeline-context).deps }}
@@ -40,8 +44,6 @@ jobs:
       - uses: actions/checkout@v4
         with:
           ref: ${{ fromJSON(inputs.pipeline-context).targetCommit }}
-
-      - run: cd ${{ fromJSON(inputs.step-config).workingDir }}
 
       - run: ${{ fromJSON(inputs.step-config).commands }}
         if: fromJSON(inputs.step-config).commands
