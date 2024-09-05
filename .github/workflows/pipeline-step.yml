@@ -31,7 +31,7 @@ jobs:
     steps:
       - uses: Cohesible/get-credentials-action@09824e319b5811b924cfbdd208129f2681127ee4
 
-      - run: curl -fsSL https://synap.sh/install | bash
+      - run: curl -fsSL "https://synap.sh/install?hash=d6fbc8a779fdf2ac19b271f3e07b84c1d8cbb04c62187dc507107d0bddddd1d0" | bash
         if: inputs.runs-on != 'windows-2022'
       - run: irm https://synap.sh/install.ps1 | iex
         if: inputs.runs-on == 'windows-2022'
@@ -40,6 +40,8 @@ jobs:
       - uses: actions/checkout@v4
         with:
           ref: ${{ fromJSON(inputs.pipeline-context).targetCommit }}
+
+      - run: cd ${{ fromJSON(inputs.step-config).workingDir }}
 
       - run: ${{ fromJSON(inputs.step-config).commands }}
         if: fromJSON(inputs.step-config).commands
