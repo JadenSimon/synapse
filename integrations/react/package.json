@@ -12,6 +12,8 @@
         "config": {
             "sharedLib": true
         },
-        "pipeline": {}
+        "pipeline": {
+            "publish": "internal"
+        }
     }
 }
