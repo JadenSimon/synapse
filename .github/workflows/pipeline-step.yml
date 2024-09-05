@@ -30,7 +30,7 @@ jobs:
 
     env:
       SYNAPSE_FORCE_REMOTE_PROJECTS: yes
-      SYNAPSE_ENV: ${{ fromJSON(inputs.step-config).environment }}
+      SYNAPSE_ENV: ${{ fromJSON(inputs.step-config).environment || 'local' }}
       SYNAPSE_PIPELINE_DEPS: ${{ fromJSON(inputs.pipeline-context).deps }}
 
     steps:
