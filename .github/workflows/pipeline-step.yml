@@ -1,0 +1,62 @@
+name: pipeline-step
+run-name: pipeline-step_${{ inputs.dispatch-id }}
+
+on:
+  workflow_dispatch:
+    inputs:
+      dispatch-id:
+        type: string
+        required: true
+      pipeline-context:
+        type: string
+        default: "{}"
+      step-config: 
+        type: string
+        default: "{}"
+      runs-on:
+        type: string
+        default: ubuntu-latest
+
+jobs:
+  execute:
+    runs-on: ${{ inputs.runs-on }}
+    permissions:
+      id-token: write
+      contents: read
+
+    env:
+      SYNAPSE_ENV: ${{ fromJSON(inputs.step-config).environment }}
+      SYNAPSE_PIPELINE_DEPS: ${{ fromJSON(inputs.pipeline-context).deps }}
+
+    steps:
+      - uses: Cohesible/get-credentials-action@09824e319b5811b924cfbdd208129f2681127ee4
+
+      - run: curl -fsSL https://synap.sh/install | bash
+        if: inputs.runs-on != 'windows-2022'
+      - run: irm https://synap.sh/install.ps1 | iex
+        if: inputs.runs-on == 'windows-2022'
+      - run: synapse --version
+
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ fromJSON(inputs.pipeline-context).targetCommit }}
+
+      - run: ${{ fromJSON(inputs.step-config).commands }}
+        if: fromJSON(inputs.step-config).commands
+
+      - name: Compile
+        run: synapse compile
+        if: fromJSON(inputs.step-config).publish
+
+      - name: Deploy
+        run: synapse deploy
+        if: fromJSON(inputs.step-config).deploy
+
+      - name: Test
+        run: synapse test
+        if: fromJSON(inputs.step-config).test
+
+      - name: Publish
+        run: synapse publish --remote --ref ${{ fromJSON(inputs.pipeline-context).stepKeyHash }}
+        if: fromJSON(inputs.step-config).publish
+

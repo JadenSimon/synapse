@@ -11,6 +11,7 @@
     "synapse": {
         "config": {
             "sharedLib": true
-        }
+        },
+        "pipeline": {}
     }
 }
