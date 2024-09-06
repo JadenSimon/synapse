@@ -7,6 +7,14 @@
         "config": {
             "sharedLib": true,
             "exposeInternal": true
+        },
+        "pipeline": {
+            "testPackage": {
+                "name": "spr:#conformance",
+                "commands": [
+                    "synapse test"
+                ]
+            }
         }
     }
 }
