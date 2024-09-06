@@ -54,14 +54,14 @@ jobs:
 
       - name: Compile
         run: synapse compile
-        if: fromJSON(inputs.step-config).publish
+        if: fromJSON(inputs.step-config).publish || fromJSON(inputs.step-config).test
 
       - name: Deploy
         run: synapse deploy
         if: fromJSON(inputs.step-config).deploy
 
       - name: Test
-        run: synapse test
+        run: ${{ fromJSON(inputs.step-config).test }}
         if: fromJSON(inputs.step-config).test
 
       - name: Publish
