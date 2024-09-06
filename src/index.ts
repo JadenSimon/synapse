@@ -63,7 +63,7 @@ import { getTypesFile } from './compiler/resourceGraph'
 import { formatEvents, getLogService } from './services/logs'
 import { getNeededDependencies } from './pm/autoInstall'
 
-// TODO: https://github.com/pulumi/pulumi/issues/3388
+// TODO: https://github.com/pulumi/pulumi/issues/3388 
 
 // Apart of refactoring story:
 // https://github.com/pulumi/pulumi/issues/3389
