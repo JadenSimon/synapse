@@ -9,7 +9,7 @@
 </p>
 
 Synapse is a toolchain for building and deploying TypeScript applications, from CLI tools to full-stack apps. Your application's infrastructure is defined within the application itself.
-
+ 
 Features:
 * Multi-stage programming - run code at build time to create exactly what you need
 * Cloud agnostic libraries - write once, deploy anywhere, including locally
