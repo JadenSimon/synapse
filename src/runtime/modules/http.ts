@@ -342,6 +342,12 @@ function resolveBody(body: any) {
         }
     }
 
+    if (body instanceof ArrayBuffer) {
+        return { 
+            body: typeof Buffer !== 'undefined' ? Buffer.from(body) : body,
+        }
+    }
+
     if (isTypedArray(body)) {
         const contentEncoding = body[contentEncodingSym]
 
@@ -741,7 +747,12 @@ function doRequest(request: http.RequestOptions | URL, body?: any) {
                     }
 
                     if (isJson && result) {
-                        const e = JSON.parse(decoded.toString('utf-8'))
+                        let e: any | undefined
+                        try {
+                            e = JSON.parse(decoded.toString('utf-8'))
+                        } catch (parseErr) {
+                            e = new Error(decoded.toString('utf-8'))
+                        }
 
                         err.message = e.message ?? `Received non-2xx status code: ${res.statusCode}`
                         const stack = `${e.name ?? 'Error'}: ${err.message}\n` + err.stack?.split('\n').slice(1).join('\n')

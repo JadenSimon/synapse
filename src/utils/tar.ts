@@ -36,7 +36,7 @@ export interface TarballFile {
     path: string
     mode: number
     contents: Buffer
-    // mtime: number
+    mtime: number
     // uid: number
     // gid: number
 }
@@ -54,6 +54,7 @@ export function extractTarball(buf: Buffer): TarballFile[] {
         const name = toString(buf, i, 100)
         const mode = parseInt(toString(buf, i + 100, 8), 8)
         const size = parseInt(toString(buf, i + 124, 12), 8)
+        const mtime = parseInt(toString(buf, i + 136, 12), 8)
         i += 512
 
         if (!isNaN(size)) {
@@ -64,6 +65,7 @@ export function extractTarball(buf: Buffer): TarballFile[] {
                 path: p, 
                 mode, 
                 contents,
+                mtime,
             })
 
             // File data section is always padded to the nearest 512 byte increment
@@ -99,7 +101,6 @@ export function createTarball(files: TarballFile[]): Buffer {
         const uid = 0
         const gid = 0
         const size = f.contents.length
-        const mtime = 0
 
         let relPath
         if (f.path.length >= 100) {
@@ -119,8 +120,7 @@ export function createTarball(files: TarballFile[]): Buffer {
         buf.write(toOctal(uid, 8), i + 108, 8, 'ascii')
         buf.write(toOctal(gid, 8), i + 116, 8, 'ascii')
         buf.write(toOctal(size, 12), i + 124, 12, 'ascii')
-        buf.write(toOctal(mtime, 12), i + 136, 12, 'ascii')
-
+        buf.write(toOctal(f.mtime, 12), i + 136, 12, 'ascii')
 
         buf.write(' '.repeat(8), i + 148, 8, 'ascii')
         let checksum = 0

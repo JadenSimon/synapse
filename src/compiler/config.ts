@@ -9,7 +9,7 @@ import { PackageJson, getPreviousPkg } from '../pm/packageJson'
 import { getProgramFs } from '../artifacts'
 import { getWorkingDir } from '../workspaces'
 import { getHash, isWindows, makeRelative, memoize, resolveRelative, throwIfNotFileNotFoundError } from '../utils'
-import { readKeySync } from '../cli/config'
+import { readPathKeySync } from '../cli/config'
 
 interface ParsedConfig {
     readonly cmd: Pick<ts.ParsedCommandLine, 'options' | 'fileNames' | 'raw'>
@@ -692,7 +692,7 @@ function libFromTarget(target: ts.ScriptTarget) {
 
 const patchTsSys = memoize(() => {
     // The filepath returned by `getExecutingFilePath` doesn't need to exist
-    const libDir = readKeySync('typescript.libDir')
+    const libDir = readPathKeySync('typescript.libDir')
     if (typeof libDir === 'string') {
         ts.sys.getExecutingFilePath = () => path.resolve(libDir, 'cli.js')
 

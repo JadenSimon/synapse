@@ -12,7 +12,7 @@ import { getBuildTargetOrThrow, getFs, getSelfPathOrThrow, isSelfSea } from '../
 import { ImportMap, expandImportMap, hoistImportMap } from '../runtime/importMaps'
 import { createCommandRunner, patchPath, runCommand } from '../utils/process'
 import { PackageJson, ResolvedPackage, getCompiledPkgJson, getCurrentPkg, getImmediatePackageJsonOrThrow, getPackageJson } from './packageJson'
-import { readKey, setKey } from '../cli/config'
+import { readPathMapKey, setPathKey } from '../cli/config'
 import { getEntrypointsFile } from '../compiler/programBuilder'
 import { createPackageForRelease, createSynapseTarball } from '../cli/buildInternal'
 import * as registry from '@cohesible/resources/registry'
@@ -228,9 +228,7 @@ export async function linkPackage(opt?: PublishOptions & { globalInstall?: boole
     }
 
     async function replaceIntegration(name: string) {
-        const overrides = await readKey<Record<string, string>>('projectOverrides') ?? {}
-        overrides[`synapse-${name}`] = resolvedDir
-        await setKey('projectOverrides', overrides)
+        await setPathKey(`projectOverrides.synapse-${name}`, resolvedDir)
     }
 
     if (pkgName.startsWith('synapse-')) {
@@ -337,7 +335,7 @@ async function getOverridesFromProject() {
 
 async function getMergedOverrides() {
     const [fromConfig, fromProject] = await Promise.all([
-        readKey<Record<string, string>>('projectOverrides'),
+        readPathMapKey('projectOverrides'),
         getOverridesFromProject()
     ])
 

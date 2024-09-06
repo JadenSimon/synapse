@@ -33,7 +33,7 @@
             "zig": "0.13.0"
         },
         "pipeline": {
-            "test": "synapse build && SYNAPSE_CMD=$(pwd)/dist/bin/synapse synapse run src/testing/internal.ts"
+            "test": "synapse build && SYNAPSE_CMD=$(pwd)/dist/bin/synapse synapse run src/testing/internal.ts && synapse clean && ./dist/bin/synapse compile"
         }
     }
 }

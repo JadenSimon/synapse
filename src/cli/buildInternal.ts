@@ -19,6 +19,7 @@ import { getLogger } from '../logging'
 import { randomUUID } from 'node:crypto'
 import { createZipFromDir } from '../deploy/deployment'
 import { tmpdir } from 'node:os'
+import { readFileWithStats } from '../system'
 
 
 const integrations = {
@@ -665,12 +666,17 @@ function stripComments(text: string) {
 }
 
 export async function createSynapseTarball(dir: string) {
-    const files = await glob(getFs(), dir, ['**/*', '**/.synapse'])    
-    const tarball = createTarball(await Promise.all(files.map(async f => ({
-        contents: Buffer.from(await getFs().readFile(f)),
-        mode: 0o755,
-        path: path.relative(dir, f),
-    }))))
+    const files = await glob(getFs(), dir, ['**/*', '**/.synapse'])
+    const tarball = createTarball(await Promise.all(files.map(async f => {
+        const { data, stats } = await readFileWithStats(f)
+
+        return {
+            contents: Buffer.from(data),
+            mode: 0o755,
+            path: path.relative(dir, f),
+            mtime: Math.round(stats.mtimeMs),
+        }
+    })))
 
     const zipped = await gzip(tarball)
 

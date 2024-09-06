@@ -14,7 +14,7 @@ import { TfState } from './state'
 import { randomUUID } from 'node:crypto'
 import { getFsFromHash, getDeploymentFs, getProgramFs, getProgramHash, getResourceProgramHashes, getTemplate, putState, setResourceProgramHashes } from '../artifacts'
 import { runCommand } from '../utils/process'
-import { readKey } from '../cli/config'
+import { readPathKey } from '../cli/config'
 import { getDisplay, spinners } from '../cli/ui'
 import { readDirRecursive } from '../system'
 
@@ -1226,7 +1226,7 @@ export function renderPlan(plan: TfPlan) {
 
 export async function getTerraformPath() {
     // This is configured on installation.
-    const configuredPath = await readKey<string>('terraform.path')
+    const configuredPath = await readPathKey('terraform.path')
     if (configuredPath) {
         return configuredPath
     }

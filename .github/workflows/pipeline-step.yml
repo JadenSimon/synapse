@@ -46,7 +46,8 @@ jobs:
         if: inputs.runs-on == 'windows-2022'
       - run: synapse --version
 
-      - run: sudo apt-get update -y && sudo apt-get install ${{ fromJSON(inputs.step-config).systemDeps }} -y
+      - name: System Dependencies
+        run: sudo apt-get update -y && sudo apt-get install ${{ fromJSON(inputs.step-config).systemDeps }} -y
         if: fromJSON(inputs.step-config).systemDeps && startsWith(inputs.runs-on, 'ubuntu')
 
       - run: ${{ fromJSON(inputs.step-config).commands }}

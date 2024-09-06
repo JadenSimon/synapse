@@ -16,7 +16,7 @@ import { createModuleResolverForBundling } from './runtime/rootLoader'
 import { getWorkingDir } from './workspaces'
 import { pointerPrefix, createPointer, isDataPointer, toAbsolute, DataPointer, coerceToPointer, isNullHash, applyPointers } from './build-fs/pointers'
 import { getModuleType } from './static-solver'
-import { readKeySync } from './cli/config'
+import { readPathKeySync } from './cli/config'
 import { isSelfSea } from './execution'
 
 // Note: `//!` or `/*!` are considered "legal comments"
@@ -71,7 +71,7 @@ export function createProgram(
 }
 
 export const setupEsbuild = memoize(() => {
-    const esbuildPath = readKeySync<string>('esbuild.path')
+    const esbuildPath = readPathKeySync('esbuild.path')
     if (!esbuildPath) {
         if (!process.env.ESBUILD_BINARY_PATH && isSelfSea()) {
             throw new Error(`Missing esbuild binary`)

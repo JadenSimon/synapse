@@ -18,7 +18,7 @@ import { createTemplateService, getHash, parseModuleName } from './templates'
 import { createImportMap, createModuleResolver } from './runtime/resolver'
 import { createAuth, getAuth } from './auth'
 import { generateOpenApiV3, generateStripeWebhooks } from './codegen/schemas'
-import { createNpmLikeCommandRunner, dumpPackage, emitPackageDist, getPkgExecutables, getProjectOverridesMapping, installToUserPath, linkPackage, publishToRemote } from './pm/publish'
+import { createNpmLikeCommandRunner, dumpPackage, emitPackageDist, getPkgExecutables, getProjectOverridesMapping, linkPackage, publishToRemote } from './pm/publish'
 import { ResolvedProgramConfig, getResolvedTsConfig, resolveProgramConfig } from './compiler/config'
 import { createProgramBuilder, getDeployables, getEntrypointsFile, getExecutables } from './compiler/programBuilder'
 import { loadCpuProfile } from './perf/profiles'
@@ -1757,6 +1757,7 @@ export async function startWatch(targets?: string[], opt?: CompilerOptions & { a
                 }
             }
         }
+
         getLogger().debug(`Changed infra files:`, [...changedDeployables])
 
         if (changedDeployables.size > 0 && config.csc.deployTarget) {
@@ -1778,6 +1779,8 @@ export async function startWatch(targets?: string[], opt?: CompilerOptions & { a
             // XXX
             await afs.clearCurrentProgramStore()
         }
+
+        await getFileHasher().flush()
     }
 
     const afterProgramCreate = watchHost.afterProgramCreate
