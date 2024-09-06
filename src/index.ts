@@ -5,7 +5,7 @@ import { FailedTestEvent, TestEvent, runTask } from './logging'
 import { BoundTerraformSession, DeployOptions, SessionContext, SessionError, createStatePersister, createZipFromDir, getChangeType, getDiff, getTerraformPath, isTriggeredReplaced, parsePlan, startTerraformSession } from './deploy/deployment'
 import { LocalWorkspace, getV8CacheDirectory, initProject, getLinkedPackagesDirectory, Program, getRootDirectory, getDeploymentBuildDirectory, getTargetDeploymentIdOrThrow, getOrCreateDeployment, getWorkingDir } from './workspaces'
 import { createLocalFs } from './system'
-import { AmbientDeclarationFileResult, Mutable, acquireFsLock, createHasher, createRwMutex, getCiType, isNonNullable, isWindows, keyedMemoize, makeExecutable, memoize, printNodes, replaceWithTilde, resolveRelative, showArtifact, throwIfNotFileNotFoundError, toAmbientDeclarationFile, wrapWithProxy } from './utils'
+import { AmbientDeclarationFileResult, Mutable, acquireFsLock, createHasher, createRwMutex, getCiType, isNonNullable, isWindows, keyedMemoize, makeExecutable, makeRelative, memoize, printNodes, replaceWithTilde, resolveRelative, showArtifact, throwIfNotFileNotFoundError, toAmbientDeclarationFile, wrapWithProxy } from './utils'
 import { MoveWithSymbols, SymbolGraph, SymbolNode, createMergedGraph, createSymbolGraph, createSymbolGraphFromTemplate, detectRefactors, evaluateMoveCommands, getKeyFromScopes, getMovesWithSymbols, getRenderedStatementFromScope, normalizeConfigs, renderSymbol, renderSymbolLocation } from './refactoring'
 import { SourceMapHost } from './static-solver/utils'
 import { getLogger } from './logging'
@@ -18,7 +18,7 @@ import { createTemplateService, getHash, parseModuleName } from './templates'
 import { createImportMap, createModuleResolver } from './runtime/resolver'
 import { createAuth, getAuth } from './auth'
 import { generateOpenApiV3, generateStripeWebhooks } from './codegen/schemas'
-import { addImplicitPackages, createMergedView, createNpmLikeCommandRunner, dumpPackage, emitPackageDist, getPkgExecutables, getProjectOverridesMapping, installToUserPath, linkPackage, publishToRemote } from './pm/publish'
+import { createNpmLikeCommandRunner, dumpPackage, emitPackageDist, getPkgExecutables, getProjectOverridesMapping, installToUserPath, linkPackage, publishToRemote } from './pm/publish'
 import { ResolvedProgramConfig, getResolvedTsConfig, resolveProgramConfig } from './compiler/config'
 import { createProgramBuilder, getDeployables, getEntrypointsFile, getExecutables } from './compiler/programBuilder'
 import { loadCpuProfile } from './perf/profiles'
@@ -37,7 +37,7 @@ import { PackageJson, ResolvedPackage, getCompiledPkgJson, getCurrentPkg, getPac
 import * as quotes from '@cohesible/quotes'
 import * as analytics from './services/analytics'
 import { TfState } from './deploy/state'
-import { bundleExecutable, bundlePkg } from './closures'
+import { bundleExecutable, bundlePkg, InternalBundleOptions } from './closures'
 import { cleanDataRepo, maybeCreateGcTrigger } from './build-fs/gc'
 import { buildBinaryDeps, copyIntegrations, createArchive, createPackageForRelease, installExternalPackages, signWithDefaultEntitlements } from './cli/buildInternal'
 import { runCommand, which } from './utils/process'
@@ -57,13 +57,13 @@ import { createIndexBackup } from './build-fs/backup'
 import { homedir } from 'node:os'
 import { createBlock, openBlock } from './build-fs/block'
 import { seaAssetPrefix } from './bundler'
-import { buildWindowsShim, compileAllZig, getZigCompilationGraph } from './zig/compile'
+import { buildWindowsShim, getZigCompilationGraph } from './zig/compile'
 import { openRemote } from './git'
 import { getTypesFile } from './compiler/resourceGraph'
 import { formatEvents, getLogService } from './services/logs'
 import { getNeededDependencies } from './pm/autoInstall'
 
-// TODO: https://github.com/pulumi/pulumi/issues/3388 
+// TODO: https://github.com/pulumi/pulumi/issues/3388
 
 // Apart of refactoring story:
 // https://github.com/pulumi/pulumi/issues/3389
@@ -512,10 +512,14 @@ export async function install(targets: string[], opt?: { dev?: boolean; mode?: '
 // guaranteed that people will be manually destroying resources in production regardless of
 // whatever we say.
 
-export async function destroy(targets: string[], opt?: CombinedOptions & { dryRun?: boolean; symbols?: string[]; deploymentId?: string; yes?: boolean }) {
+export async function destroy(targets: string[], opt?: CombinedOptions & { dryRun?: boolean; symbols?: string[]; deploymentId?: string; yes?: boolean; cleanAfter?: boolean }) {
     // TODO: this should be done prior to running any commands, not within a command
     if (opt?.deploymentId) {
         Object.assign(getBuildTargetOrThrow(), { deploymentId: opt?.deploymentId }) 
+    }
+
+    if (opt?.cleanAfter && !getBuildTargetOrThrow().deploymentId) {
+        return clean()
     }
 
     const deploymentId = opt?.deploymentId ?? getTargetDeploymentIdOrThrow()
@@ -523,7 +527,7 @@ export async function destroy(targets: string[], opt?: CombinedOptions & { dryRu
     if (!state || state.resources.length === 0) {
         getLogger().debug('No resources to destroy, returning early')
         printLine(colorize('green', 'Nothing to destroy!'))
-        return
+        return opt?.cleanAfter ? clean() : undefined
     }
 
     const template = await maybeRestoreTemplate()
@@ -586,6 +590,10 @@ export async function destroy(targets: string[], opt?: CombinedOptions & { dryRu
     } finally {
         if (opt?.syncAfter) {
             await syncModule(deploymentId)
+        }
+
+        if (opt?.cleanAfter) {
+            await clean()
         }
 
         view.dispose()
@@ -1530,12 +1538,15 @@ export async function moveResource(from: string, to: string) {
     const oldGraph = createSymbolGraphFromTemplate(oldTemplate)
 
 
-    if (oldGraph.hasResource(from) || graph.hasResource(to)) {
-        if (!(oldGraph.hasResource(from) && graph.hasResource(to))) {
-            throw new Error(`Absolute references must be moved to absolute references`)
+    if (graph.hasResource(to)) {
+        const found = state.resources.find(r => `${r.type}.${r.name}` === from)
+        if (!found) {
+            throw new Error(`Missing resource in state: ${from}`)
         }
 
-        throw new Error('TODO')
+        const moves = [{ from, to }]
+        await saveMoved(moves, template)
+        return
     }
 
     function getResourceKeys(graph: SymbolGraph, node: ReturnType<typeof getSymbolNodeFromRef>) {
@@ -1589,13 +1600,34 @@ export async function moveResource(from: string, to: string) {
         }
 
         const to = toKeysMap.get(k.relative)
-        if (to) {
+        if (to && to !== k.absolute) {
             moves.push({ from: k.absolute, to })
         }
     }
 
     if (moves.length === 0) {
         throw new Error('Nothing to move!')
+    }
+
+
+    const priorMoved = await getMoved()
+    if (priorMoved) {
+        for (const m of priorMoved) {
+            const matchFrom = moves.find(x => x.from === m.from)
+            if (!matchFrom) {
+                const matchTo = moves.find(x => x.to === m.to)
+                if (matchTo) {
+                    throw new Error(`Found move conflict [from]: ${matchTo.from} !== ${m.from}`)
+                }
+
+                moves.push(m)
+                continue
+            }
+
+            if (matchFrom.to !== m.to) {
+                throw new Error(`Found move conflict [to]: ${matchFrom.to} !== ${m.to}`)
+            }
+        }
     }
 
     function showMissedResources() {
@@ -2279,7 +2311,7 @@ async function loadMovedIntoTemplate(fileName: string, template?: TfJson) {
     const state = await readState()
     const resourceSet = new Set(state?.resources.map(r => `${r.type}.${r.name}`))
 
-    const checked: { from: string; to: string }[] = []
+    const checked = await getMoved() ?? []
     for (const [k, v] of Object.entries(moved)) {
         if (typeof v !== 'string') {
             throw new Error(`"from" is not a string: ${JSON.stringify(v)} [key: ${k}]`)
@@ -2288,7 +2320,16 @@ async function loadMovedIntoTemplate(fileName: string, template?: TfJson) {
         // TODO: validate that `v` is in the current template
 
         if (resourceSet.has(v)) {
-            printLine(`Resource already exists: ${v}`)
+            getLogger().log(`Resource already exists: ${v}`)
+            continue
+        }
+
+        const conflicts = checked.filter(x => x.from === k || x.to === v)
+        if (conflicts.length > 0) {
+            const withoutDupes = conflicts.filter(x => x.from !== k || x.to !== v)
+            if (withoutDupes.length > 0) {
+                getLogger().warn(`Found conflicting move: ${k} -> ${v}`)
+            }
             continue
         }
 
@@ -2345,15 +2386,17 @@ export async function setSessionDuration(target: string, opt?: CombinedOptions) 
     await auth.updateAccountConfig(acc, { sessionDuration })
 }
 
-export async function listDeployments(type?: string, opt?: CombinedOptions) {
+export async function listDeployments(type?: string, opt?: CombinedOptions & { all?: boolean }) {
     const rootDir = workspaces.getRootDir()
     const deployments = await workspaces.listAllDeployments()
     for (const [k, v] of Object.entries(deployments)) {
-        const s = await readState(getDeploymentFs(k, v.programId, v.projectId))
+        const rel = makeRelative(rootDir, v.workingDirectory)
 
+        if (!opt?.all && rel.startsWith('..')) continue
+
+        const s = await readState(getDeploymentFs(k, v.programId, v.projectId))
         const isRunning = s && s.resources.length > 0
-        const rel = path.relative(rootDir, v.workingDirectory)
-        const info = `(${rel || '.'}) [${isRunning ? 'RUNNING' : 'STOPPED'}]`
+        const info = `(${rel || '.'}) [${isRunning ? 'RUNNING' : 'STOPPED'}]${v.environment ? ` [env: ${v.environment}]` : ''}`
         printLine(`${k} ${info}`)
     }
 }
@@ -2819,6 +2862,8 @@ async function getPreviousDeployInfo() {
     return { state, hash, deploySources }
 }
 
+// TODO: we need to check if any new files were added to included dirs and
+// treat those additional files as stale
 async function getStaleSources(include?: Set<string>) {
     const sources = await readSources()
     const hasher = getFileHasher()
@@ -3087,6 +3132,14 @@ export async function buildExecutables(targets: string[], opt: BuildExecutableOp
     }
 
     function getSyntheticBin() {
+        if (targets.length === 0) {
+            // If there's only one possible option, use it
+            const execs = Object.keys(executables!)
+            if (execs.length === 1) {
+                targets = execs
+            }
+        }
+
         if (targets.length !== 1) {
             return
         }
@@ -3130,7 +3183,7 @@ export async function buildExecutables(targets: string[], opt: BuildExecutableOp
 
     const external = ['esbuild', 'typescript', 'postject']
     // XXX: this is hard-coded to `synapse`
-    const bundleOpt = pkg.data.name === 'synapse' ? {
+    const bundleOpt: InternalBundleOptions = pkg.data.name === 'synapse' ? {
         sea: opt.sea,
         external, 
         lazyLoad: ['@cohesible/*', 'typescript', 'esbuild', ...lazyNodeModules],

@@ -1,0 +1,5 @@
+{
+    "dependencies": {
+        "pkg": "file:pkg/out/pkg.tgz"
+    }
+}

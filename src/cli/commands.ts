@@ -542,7 +542,8 @@ registerTypedCommand(
             ...deployOptions, 
             { name: 'deploymentId', type: 'string', hidden: true },
             { name: 'tests-only', type: 'boolean', hidden: true },
-            { name: 'yes', type: 'boolean', hidden: true }
+            { name: 'yes', type: 'boolean', hidden: true },
+            { name: 'clean-after', type: 'boolean', hidden: true }
         ],
         requirements: { program: true, process: true },
         inferBuildTarget: true,
@@ -558,6 +559,7 @@ registerTypedCommand(
             deploymentId: opt.deploymentId,
             useTests: opt['tests-only'],
             yes: opt['yes'],
+            cleanAfter: opt['clean-after'],
         })
     }
 )

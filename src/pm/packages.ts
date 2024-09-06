@@ -10,7 +10,7 @@ import type { TerraformPackageManifest } from '../runtime/modules/terraform'
 import { ProviderConfig, createProviderGenerator, getProviderSource, listProviderVersions } from '../codegen/providers'
 import { createHash } from 'node:crypto'
 import { DataRepository, InstallationAttributes, ModuleBindingResult, ReadonlyBuildFs, Snapshot, commitPackages, getInstallation, getModuleMappings, getPrefixedPath, isSnapshotTarball, readInfraMappings, unpackSnapshotTarball, getDataRepository, getProgramFs, loadSnapshot, tryLoadSnapshot, commitProgram, getProgramHash } from '../artifacts'
-import { addImplicitPackages, getDependentsData, getPackageOverride, installBin, setDependentsData, updateDependent } from './publish'
+import { getDependentsData, getPackageOverride, installBin, setDependentsData, updateDependent } from './publish'
 import { ModuleResolver } from '../runtime/resolver'
 import { extractTarball, extractToDir } from '../utils/tar'
 import { Fs, JsonFs, SyncFs, readDirectorySync } from '../system'
@@ -30,7 +30,10 @@ import { cleanDir, fastCopyDir, removeDir } from '../zig/fs-ext'
 import { colorize, printLine } from '../cli/ui'
 import { OptimizedPackageManifest, PackageManifest, PublishedPackageJson, createManifestRepo, createMultiRegistryClient, createNpmRegistryClient } from './manifests'
 import { createGitHubPackageRepo, downloadGitHubPackage, githubPrefix } from './repos/github'
-import { createSynapsePackageRepo, downloadSynapsePackage, sprPrefix } from './repos/spr'
+import { createSynapsePackageRepo, downloadSynapsePackage, getPipelineDeps, sprPrefix } from './repos/spr'
+import { getTsPathMappings } from '../compiler/entrypoints'
+import { getOutputFilename, getResolvedTsConfig } from '../compiler/config'
+import { execCommand } from '../utils/process'
 
 // legacy
 const providerRegistryHostname = ''
@@ -753,6 +756,7 @@ function createSprRepoWrapper(
     const toolRepo = createToolRepo()
     const githubRepo = createGitHubPackageRepo()
     const sprRepo = createSynapsePackageRepo()
+    const pipelineDeps = getPipelineDeps()
 
     const _getTerraformPath = memoize(getTerraformPath)
     async function _getProviderVersions(name: string) {
@@ -888,9 +892,12 @@ function createSprRepoWrapper(
                 return { name: `${providerPrefix}${provider.name}`, version: provider.version }
             }
 
-            const override = await getPackageOverride(parseCspmRef(pattern))
-            if (override) {
-                return { name: `file:${override}`, version: parseVersionConstraint('*') }
+            const name = parseCspmRef(pattern)
+            if (!pipelineDeps?.[name]) {
+                const override = await getPackageOverride(name)
+                if (override) {
+                    return { name: `file:${override}`, version: parseVersionConstraint('*') }
+                }
             }
 
             if (pattern.startsWith(sprPrefix)) {
@@ -1926,6 +1933,8 @@ export async function installFromSnapshot(
     }
 }
 
+const postinstallAllowlist = new Set(['puppeteer'])
+
 export async function writeToNodeModules(
     fs: Fs, 
     mapping: ImportMap2, 
@@ -2262,6 +2271,14 @@ export async function writeToNodeModules(
                     const files = await glob(fs, pkgLocation, patterns) 
                     await Promise.all(files.map(async f => copyFile(f, path.resolve(dest, path.relative(pkgLocation, f)))))
                 }
+            }
+
+            // TODO: UI needs to show that we're running install scripts
+            if (pkgInfo?.name && pkgInfo?.type === 'npm' && pkg.scripts?.postinstall && postinstallAllowlist.has(pkgInfo.name)) {
+                getLogger().log(`Running postinstall for pkg "${pkgInfo.name}" in:`, directory)
+                await execCommand(pkg.scripts.postinstall, {
+                    cwd: dest,
+                })
             }
         }
 
@@ -2843,6 +2860,12 @@ export async function downloadAndUpdatePackage(pkg: ResolvedPackage, deps: Recor
 
     for (const [k, v] of Object.entries(result.subtrees)) {
         if (isRemove || !(k in deps)) continue
+
+        if (deps[k].startsWith('file:')) {
+            currentDeps[k] = deps[k]
+            continue
+        }
+
         const z = parseVersionConstraint(deps[k])
         if (isExact(z)) {
             currentDeps[k] = `${v.resolved!.version}`
@@ -3298,6 +3321,16 @@ function createPackageResolver(
 
                 const packageEntry = findEntryFromPath(resolved)
                 if (packageEntry === undefined) {
+                    if (specifier.endsWith('.zig')) {
+                        // XXX: temporary hack to "unwrap" the module info
+                        const stubName = `${resolved}.js`
+                        const p = getProgramFs().getPointerSync(stubName)
+                        const { hash, storeHash } = p.resolve()
+                        const m = getDataRepository().getMetadata(hash, storeHash)
+                        const d = Object.entries(m.dependencies!)[0]
+                        
+                        return { module: toDataPointer(`pointer:${d[0]}:${d[1][0]}`) }
+                    }
                     throw new Error(`Missing package entry: ${resolved} [resolving ${specifier} from ${location}]`)
                 }
 
@@ -3320,7 +3353,12 @@ function createPackageResolver(
             const name = components.name
             const packageEntry = findEntryFromSpecifier(name, lookupDir)
             if (packageEntry === undefined) {
-                throw new Error(`Missing package entry: ${name}`)
+                // XXX: let it fail at bundle time
+                // TODO: this reverse loopup logic is largely outdated and likely can be removed
+                // We can attach any relevant serialization info during deserialization and/or resolution
+                // return { module: specifier }
+
+                throw new Error(`Missing package entry: ${name} from ${lookupDir}`)
             }
 
             const packageInfo = mapEntry(packageEntry)
@@ -3330,9 +3368,6 @@ function createPackageResolver(
 
             return {
                 module: specifier,
-                // packageInfo,
-                // dependencies: getDependencies(packageEntry),
-                // location: packageEntry.directory,
             }
         }
     }
@@ -3671,35 +3706,6 @@ export function createPackageInstaller(params?: PackageInstallerParams) {
         }
     }
 
-    async function getImportMapForPackage(pkg: PackageJson) {
-        const deps = { ...pkg.dependencies, ...pkg.optionalDependencies }
-        const repo = getNpmPackageRepo()
-        const result = await resolveDeps(deps, repo)
-        const manifest = await toPackageManifest(repo, result)
-
-        return getImportMap(manifest)
-    }
-
-    async function runPostInstall(postinstall: string, pkgDir: string, pkg: PackageJson) {
-        const importMap = await getImportMapForPackage(pkg)
-        const importMapPath = path.resolve(pkgDir, 'import-map.json')
-        await fs.writeFile(importMapPath, JSON.stringify(importMap))
-
-        // XXX: not really used, need to wrap `child_process` to 
-        // forward to a virtualized machine to make this work well
-        const targetEnv = {
-            ...process.env,
-            'NODE_ARCH': nodeArch,
-            'NODE_PLATFORM': nodePlatform,
-            'NODE_ENDIANNESS': resolvedTarget.endianness,
-        }
-
-        // const result = await execCommand(postinstall, { 
-        //     env: await resolveWrapperEnvVars(fs, importMapPath, targetEnv),
-        //     cwd: pkgDir,
-        // }).finally(() => fs.deleteFile(importMapPath))
-    }
-
     async function getPublishedMappings(name: string, pointer: string): Promise<[string, ImportMap2[string]] | undefined> {
         const { hash, storeHash } = getPointerComponents(pointer)
         if (!storeHash) {
@@ -3730,6 +3736,23 @@ export function createPackageInstaller(params?: PackageInstallerParams) {
         return Object.entries(m)[0]
     }
 
+    async function getPointerEntry(hash: string, storeHash: string): Promise<ImportMap<SourceInfo>[string]> {
+        if (isNullHash(storeHash)) {
+            return {
+                source: { type: 'artifact', data: { hash, metadataHash: storeHash }},
+                location: `${pointerPrefix}${storeHash}:${hash}`,
+                locationType: 'module',
+            }
+        }
+
+        return {
+            source: { type: 'artifact', data: { hash, metadataHash: storeHash }},
+            location: `${pointerPrefix}${storeHash}:${hash}`,
+            locationType: 'module',
+            mapping: await getPointerMappings(hash, storeHash),
+        }
+    }
+
     const pointerMappings = new Map<string, ImportMap<SourceInfo> | undefined>()
     async function getPointerMappings(hash: string, storeHash: string) {
         const cacheKey = `${storeHash}:${hash}`
@@ -3752,12 +3775,7 @@ export function createPackageInstaller(params?: PackageInstallerParams) {
         if (m.dependencies) {
             for (const [k, v] of Object.entries(m.dependencies)) {
                 for (const k2 of v) {
-                    mapping[`${pointerPrefix}${k2}`] = {
-                        source: { type: 'artifact', data: { hash: k2, metadataHash: k }},
-                        location: `${pointerPrefix}${k}:${k2}`,
-                        locationType: 'module',
-                        mapping: await getPointerMappings(k2, k)
-                    }
+                    mapping[`${pointerPrefix}${k2}`] = await getPointerEntry(k2, k)
                 }
             }
         }
@@ -4067,24 +4085,54 @@ export async function createPackageService(moduleResolver: ModuleResolver, repo 
         getLogger().debug(`Registered globals`, resolved)
     }
 
+    async function maybeGetTsPathMappings() {
+        const tsConfig = await getResolvedTsConfig(programFs)
+        if (!tsConfig?.options.paths) {
+            return
+        }
+
+        const mappings = await getTsPathMappings(workingDirectory)
+        if (!mappings) {
+            return
+        }
+
+        const rootDir = tsConfig.options.rootDir || workingDirectory
+
+        const importMap: ImportMap2 = {}
+        for (const [k, v] of Object.entries(mappings)) {
+            importMap[k] = {
+                locationType: 'module',
+                location: getOutputFilename(rootDir, tsConfig.options, v),
+            }
+        }
+
+        return importMap
+    }
+
     async function loadProgramState() {
-        const [installation, infraMappings, currentPointers] = await Promise.all([
+        const [installation, infraMappings, currentPointers, tsPathMappings] = await Promise.all([
             getInstallationCached(programFs),
             readInfraMappings(programFs),
             readPointersFile(programFs),
+            maybeGetTsPathMappings(),
         ])
 
         return {
             installation,
             infraMappings,
             currentPointers,
+            tsPathMappings,
         }
     }
 
-    async function loadIndex() {
-        const { installation, infraMappings, currentPointers } = await loadProgramState()
+    async function _loadIndex() {
+        const { installation, infraMappings, currentPointers, tsPathMappings } = await loadProgramState()
         if (!installation?.packages) {
             throw new Error(`No packages installed`)
+        }
+
+        if (tsPathMappings) {
+            moduleResolver.registerMapping(tsPathMappings, workingDirectory)
         }
 
         const runtimeModules: NonNullable<Snapshot['moduleManifest']> = {}
@@ -4175,7 +4223,7 @@ export async function createPackageService(moduleResolver: ModuleResolver, repo 
                     function bindMappings(mappings: ImportMap2) {
                         for (const [k, v] of Object.entries(mappings)) {
                             const source = v.source
-                            if (source?.type === 'artifact') {
+                            if (source?.type === 'artifact' && sourcePointers) {
                                 const mapped = maybeMapNestedPointers(source.data.metadataHash, source.data.hash, sourcePointers)
                                 pointers[`pointer:${source.data.metadataHash}:${source.data.hash}`] = mapped
                             }
@@ -4260,7 +4308,7 @@ export async function createPackageService(moduleResolver: ModuleResolver, repo 
         downloadPackage: installer.downloadPackage,
         getImportMap: installer.getImportMap,
         getHashWithDeps: installer.getHashWithDeps,
-        loadIndex,
+        loadIndex: () => runTask('', 'loadIndex', _loadIndex, 1),
         registerPointerDependencies,
     }
 }

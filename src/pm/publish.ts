@@ -1,6 +1,6 @@
 import * as path from 'node:path'
 import { StdioOptions } from 'node:child_process'
-import { mergeBuilds, pruneBuild, consolidateBuild, commitPackages, getInstallation, writeSnapshotFile, getProgramFs, getDataRepository, getModuleMappings, loadSnapshot, dumpData, getProgramFsIndex, getDeploymentFsIndex, toFsFromIndex, copyFs, createSnapshot, getOverlayedFs, Snapshot, ReadonlyBuildFs, getSnapshotPath } from '../artifacts'
+import { mergeBuilds, pruneBuild, getInstallation, writeSnapshotFile, getProgramFs, getDataRepository, getModuleMappings, loadSnapshot, dumpData, getProgramFsIndex, getDeploymentFsIndex, toFsFromIndex, copyFs, createSnapshot, getOverlayedFs, Snapshot, ReadonlyBuildFs, getSnapshotPath } from '../artifacts'
 import {  NpmPackageInfo, getDefaultPackageInstaller, installFromSnapshot, testResolveDeps } from './packages'
 import { getBinDirectory, getSynapseDir, getLinkedPackagesDirectory, getToolsDirectory, getUserEnvFileName, getWorkingDir, listPackages, resolveProgramBuildTarget, SynapseConfiguration, getUserSynapseDirectory, setPackage, BuildTarget, findDeployment, getOrCreateRemotePackage } from '../workspaces'
 import { gunzip, gzip, isNonNullable, keyedMemoize, linkBin, makeExecutable, memoize, throwIfNotFileNotFoundError, tryReadJson } from '../utils'
@@ -396,7 +396,10 @@ async function findOwnSnapshot(currentDir: string) {
     return { pkg, snapshot }
 }
 
-export async function addImplicitPackages(packages: Record<string, string>, synapseConfig?: SynapseConfiguration) {
+export async function addImplicitPackages(
+    packages: Record<string, string>, 
+    synapseConfig?: SynapseConfiguration,
+) {
     const withTargets = synapseConfig?.target && !synapseConfig?.sharedLib 
         ? maybeAddTargetPackage(packages, synapseConfig.target) 
         : packages

@@ -1805,10 +1805,6 @@ interface ResourceSymbol {
     readonly assignment?: { readonly name: string; readonly pos: number }
 }
 
-// function getResourceSymbols(): ResourceSymbol[] {
-//     return []
-// }
-
 export function renderSymbolLocation(sym: Pick<Symbol, 'line' | 'column' | 'fileName'>, includePosition = false) {
     const pos = `:${sym.line + 1}:${sym.column + 1}`
 
@@ -1870,6 +1866,21 @@ export function evaluateMoveCommands(template: TfJson, state: TfState) {
         }
 
         function getPrefixAndSuffix(key: string) {
+            if (cmd.type === 'fixup') {
+                const parts = cmd.scope.split('--')
+                const index = -3
+                if (parts.at(index) !== cmd.name) {
+                    throw new Error(`Invalid fixup: ${cmd.name} in scope ${cmd.scope}`)
+                }
+
+                const prevScope = parts.slice(0, index).concat(parts.slice(index + 1, -1)).join('--')
+
+                return {
+                    prefix: prevScope,
+                    suffix: key.slice(cmd.scope.length),
+                }
+            }
+
             if (cmd.name.startsWith('this.')) {
                 const [module, ...rem] = cmd.scope.split('_') 
                 const scope = rem.join('_')

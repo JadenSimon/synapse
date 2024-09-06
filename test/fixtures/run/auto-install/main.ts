@@ -5,6 +5,4 @@ export async function main() {
 }
 
 // !commands
-// synapse clean
 // synapse run
-

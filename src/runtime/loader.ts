@@ -911,22 +911,30 @@ export function createModuleLoader(
     const getPointerData = (pointer: DataPointer) => {
         const data = hydratePointers(dataRepository, pointer)
 
-        // XXX: pretty hacky
+        // XXX: pretty hacky, would break on code that starts with a block
         if (typeof data === 'string' && data[0] !== '{') {
             getLogger().debug(`Treating module "${pointer.hash}" as text`)
 
             return data
         }
 
-        const artifact = typeof data === 'string' ? JSON.parse(data) : data as Artifact
-        if (artifact.kind === 'compiled-chunk') {
-            return Buffer.from(artifact.runtime, 'base64').toString('utf-8')
-        } else if (artifact.kind === 'deployed') {
-            if (artifact.rendered) {
-                return Buffer.from(artifact.rendered, 'base64').toString('utf-8')
-            }
+        const artifact = (typeof data === 'string' ? JSON.parse(data) : data) as Artifact
+        switch (artifact.kind) {
+            case 'compiled-chunk':
+                return Buffer.from(artifact.runtime, 'base64').toString('utf-8')
 
-            return artifact
+            case 'deployed':
+                if (artifact.rendered) {
+                    return Buffer.from(artifact.rendered, 'base64').toString('utf-8')
+                }
+    
+                return artifact
+
+            case 'native-module':
+                return [
+                    Buffer.from(artifact.binding, 'base64').toString('utf-8'),
+                    path.resolve(workingDirectory, artifact.bindingLocation)
+                ] as const
         }
 
         throw new Error(`Unknown artifact kind: ${(artifact as any).kind}`)
@@ -977,22 +985,30 @@ export function createModuleLoader(
             })
 
             const data = getPointerData(pointer)
-
-            if (typeof data !== 'string') {
-                return new vm.SyntheticModule(Object.keys(data.captured), function () {
-                    const loaded = loadPointerData(data, m.id, ctx)
-                    for (const [k, v] of Object.entries(loaded)) {
-                        this.setExport(k, v)
-                    }
-                }, { identifier: name, context: ctx?.vm })
+            if (typeof data === 'string') {
+                return new vm.SourceTextModule(data, {
+                    context: ctx?.vm,
+                    identifier: name,
+                    importModuleDynamically: opt?.importModuleDynamically as any,
+                    initializeImportMeta: opt?.initializeImportMeta,
+                })
             }
 
-            return new vm.SourceTextModule(data, {
-                context: ctx?.vm,
-                identifier: name,
-                importModuleDynamically: opt?.importModuleDynamically as any,
-                initializeImportMeta: opt?.initializeImportMeta,
-            })
+            if (Array.isArray(data) && data.length === 2) {
+                return new vm.SourceTextModule(data[0], {
+                    context: ctx?.vm,
+                    identifier: data[1],
+                    importModuleDynamically: opt?.importModuleDynamically as any,
+                    initializeImportMeta: opt?.initializeImportMeta,
+                })
+            }
+
+            return new vm.SyntheticModule(Object.keys((data as any).captured), function () {
+                const loaded = loadPointerData(data, m.id, ctx)
+                for (const [k, v] of Object.entries(loaded)) {
+                    this.setExport(k, v)
+                }
+            }, { identifier: name, context: ctx?.vm })
         }
 
         switch (path.extname(m.fileName!)) {
@@ -1040,7 +1056,7 @@ export function createModuleLoader(
                 codeCache,
                 cacheKey,
                 sourceMapParser,
-                wrappedProcess,
+                getWrappedProcess(ctx),
                 id => _createRequire(m.id, ctx)(id),
                 opt?.importModuleDynamically,
                 // m.cjs,
@@ -1059,12 +1075,16 @@ export function createModuleLoader(
             })
 
             const data = getPointerData(pointer)
-
-            if (typeof data !== 'string') {
-                return createSyntheticCjsModule(() => loadPointerData(data, m.id, ctx))
+            if (typeof data === 'string') {
+                return createScript(data, name, pointer.hash)
             }
 
-            return createScript(data, name, pointer.hash)
+            // Native module
+            if (Array.isArray(data) && data.length === 2) {
+                return createScript(data[0], data[1], pointer.hash)
+            }
+
+            return createSyntheticCjsModule(() => loadPointerData(data, m.id, ctx))
         }
 
         if (isSea && m.typeHint === 'sea-asset') {
@@ -1101,11 +1121,7 @@ export function createModuleLoader(
                 return createSyntheticCjsModule(() => JSON.parse(fs.readFileSync(fileName, 'utf-8')))
             case '.node':
                 return createSyntheticCjsModule(module => {
-                    const resolved = dataRepository.getDiskPath
-                        ? dataRepository.getDiskPath(path.relative(workingDirectory, fileName))
-                        : fileName
-
-                    process.dlopen(module, resolved)
+                    getWrappedProcess(ctx).dlopen(module, fileName)
 
                     return module.exports
                 })
@@ -1156,7 +1172,19 @@ export function createModuleLoader(
 
     // Used to make sure `cwd()` works as expected.
     // Probably doesn't work with the working dir in `path.resolve`
-    const wrappedProcess = wrapProcess(process, workingDirectory, dataRepository, env) 
+    const wrappedProcesses = new Map<Context | undefined, NodeJS.Process>()
+    function getWrappedProcess(ctx: Context | undefined) {
+        const p = wrappedProcesses.get(ctx)
+        if (p) {
+            return p
+        }
+
+        const np = wrapProcess(process, workingDirectory, dataRepository, env, ctx)
+        wrappedProcesses.set(ctx, np)
+
+        return np
+    }
+
     function _createRequire(location = dummyEntrypoint, ctx: Context | undefined = getDefaultContext(), linker = getLinker(ctx)) {
         const isVirtualImporter = location.startsWith(pointerPrefix)
         const resolveLocation = isVirtualImporter ? dummyEntrypoint : path.resolve(workingDirectory, location)
@@ -1752,11 +1780,31 @@ function wrapOs(os: typeof import('node:os')): typeof import('node:os') {
     return createModuleWrap(os, overrides)
 }
 
+// Doesn't do symbols
+function setGlobals(globals: typeof global, props: Record<string, any>) {
+    const prev: any[] = []
+    const keys = Object.keys(props)
+    for (const key of keys) {
+        prev.push((globals as any)[key])
+        ;(globals as any)[key] = props[key]
+    }
+
+    function restore() {
+        for (let i = 0; i < keys.length; i++) {
+            const key = keys[i]
+            ;(globals as any)[key] = prev[i]
+        }
+    }
+
+    return restore
+}
+
 function wrapProcess(
     proc: typeof process, 
     workingDirectory: string,
     dataRepository: BasicDataRepository,
-    env?: Record<string, string | undefined>
+    env?: Record<string, string | undefined>,
+    ctx?: Context
 ): typeof process {
     const mergedEnv = { ...proc.env, ...env }
     const arch = mergedEnv['NODE_ARCH'] || proc.arch
@@ -1767,7 +1815,13 @@ function wrapProcess(
             ? dataRepository.getDiskPath(path.relative(workingDirectory, fileName))
             : fileName
 
-        proc.dlopen(module, resolved)
+        if (!ctx) {
+            return proc.dlopen(module, resolved)
+        }
+
+        const restore = setGlobals(ctx.globals, { proc, module })
+        vm.runInContext(`proc.dlopen(module, '${resolved}')`, ctx.vm)
+        restore()
     }
 
     return new Proxy(proc, {

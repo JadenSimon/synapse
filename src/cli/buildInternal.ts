@@ -485,6 +485,8 @@ export async function createPackageForRelease(
         }
     }
 
+    // TODO: we need to preserve any pointers used by published files
+    // So we should search through all exported code and catalog the pointers
     const pruned = await createMergedView(programId, deploymentId)
 
     for (const f of Object.keys(pruned.files)) {
@@ -501,7 +503,13 @@ export async function createPackageForRelease(
     // Remap `pointers`
     for (const v of Object.values(snapshot.pointers)) {
         for (const [k, p] of Object.entries(v)) {
-            v[k] = toAbsolute(consolidated.copier!.getCopiedOrThrow(p))
+            // Only pointers that are referenced by exported symbols will exist
+            const copied = consolidated.copier!.getCopied(p)
+            if (copied) {
+                v[k] = toAbsolute(copied)
+            } else {
+                delete v[k]
+            }
         }
     }
 
@@ -692,7 +700,7 @@ export async function createArchive(dir: string, dest: string, sign?: boolean) {
 
 function pruneObject(obj: Record<string, any>, s: Set<string>) {
     for (const [k, v] of Object.entries(obj)) {
-        if (!s.has(k)) {
+        if (!s.has(k) && !s.has(k.replace(/\.infra\.js$/, '.js'))) {
             delete obj[k]
         }
     }
