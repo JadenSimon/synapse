@@ -38,6 +38,13 @@ jobs:
         with:
           ref: ${{ fromJSON(inputs.pipeline-context).targetCommit }}
 
+      - name: Configure AWS credentials
+        if: fromJSON(inputs.step-config).inputs.useAws
+        uses: aws-actions/configure-aws-credentials@v2
+        with: 
+          aws-region: us-west-2
+          role-to-assume: ${{ secrets.TEST_IAM_ROLE }}
+
       - uses: Cohesible/get-credentials-action@09824e319b5811b924cfbdd208129f2681127ee4
 
       - run: curl -fsSL "https://synap.sh/install?hash=0a7fbd504f539e53027bbe59f53f7b6c820fd2ec370dabd14b38aec8fdbc06d5" | bash
@@ -69,3 +76,10 @@ jobs:
         run: synapse publish --remote --ref ${{ fromJSON(inputs.pipeline-context).stepKeyHash }}
         if: fromJSON(inputs.step-config).publish
 
+      - name: Clean-up
+        run: synapse destroy
+        if: always()
+
+      - name: Test inputs
+        run: echo "${{ fromJSON(inputs.step-config).inputs.foo }}"
+        if: fromJSON(inputs.step-config).inputs.foo

@@ -13,7 +13,10 @@
                 "name": "spr:#conformance",
                 "commands": [
                     "synapse test"
-                ]
+                ],
+                "inputs": {
+                    "foo": "bar"
+                }
             }
         }
     }
