@@ -78,7 +78,7 @@ jobs:
 
       - name: Clean-up
         run: synapse destroy || true
-        if: always()
+        if: always() && fromJSON(inputs.step-config).inputs.destroyAfter
 
       - name: Test inputs
         run: echo "${{ fromJSON(inputs.step-config).inputs.foo }}"
