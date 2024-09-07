@@ -14,11 +14,7 @@
                 "name": "spr:#conformance",
                 "commands": [
                     "synapse test --destroy-after"
-                ],
-                "inputs": {
-                    "foo": "bar2",
-                    "destroyAfter": true
-                }
+                ]
             }
         }
     }
