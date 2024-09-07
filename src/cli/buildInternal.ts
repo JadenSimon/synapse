@@ -1115,6 +1115,8 @@ export async function main(...args: string[]) {
     const target = args[0]?.startsWith('--') ? undefined : args[0]
     const buildTarget = await resolveProgramBuildTarget(process.cwd())
 
+    process.on('unhandledRejection', console.error)
+
     return runWithContext(
         { buildTarget },
         () => internalBundle(target, {
