@@ -21,6 +21,7 @@ import { tmpdir } from 'node:os'
 import { bundleExecutable, bundlePkg } from '../closures'
 import { buildWindowsShim } from '../zig/compile'
 import { makeSea, resolveAssets } from '../build/sea'
+import { logToStderr } from './logger'
 
 
 const integrations = {
@@ -1116,6 +1117,8 @@ export async function main(...args: string[]) {
     const buildTarget = await resolveProgramBuildTarget(process.cwd())
 
     process.on('unhandledRejection', console.error)
+
+    logToStderr(getLogger())
 
     return runWithContext(
         { buildTarget },
