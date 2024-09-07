@@ -39,7 +39,7 @@ import * as analytics from './services/analytics'
 import { TfState } from './deploy/state'
 import { bundleExecutable, bundlePkg, InternalBundleOptions } from './closures'
 import { cleanDataRepo, maybeCreateGcTrigger } from './build-fs/gc'
-import { buildBinaryDeps, copyIntegrations, createArchive, createPackageForRelease, installExternalPackages, signWithDefaultEntitlements } from './cli/buildInternal'
+import { createArchive, createPackageForRelease, lazyNodeModules } from './cli/buildInternal'
 import { runCommand, which } from './utils/process'
 import { transformNodePrimordials } from './utils/convertNodePrimordials'
 import { createCompileView, getPreviousDeploymentData } from './cli/views/compile'
@@ -68,13 +68,6 @@ import { getNeededDependencies } from './pm/autoInstall'
 // Apart of refactoring story:
 // https://github.com/pulumi/pulumi/issues/3389
 
-function removeUndefined<T extends Record<string, any>>(obj: T | undefined): { [P in keyof T]: NonNullable<T[P]> } | undefined {
-    if (!obj) {
-        return obj
-    }
-
-    return Object.fromEntries(Object.entries(obj).filter(([_, v]) => v !== undefined)) as any
-}
 
 export type CombinedOptions = CompilerOptions & DeployOptions & { 
     forceRefresh?: boolean
@@ -309,14 +302,17 @@ export async function deploy(targets: string[], opt?: DeployOpt2) {
 
     const programFsHash = opt?.sessionCtx?.buildTarget.programHash
     if (!programFsHash && !opt?.targetResources) {
-        const doCompile = (beforeSynthCommit?: () => Promise<void>) => compile(targets, { incremental: true, skipSummary: true, hideLogs: true, deployTarget: opt?.deployTarget, beforeSynthCommit })
+        const doCompile = (forcedSynth?: boolean) => compile(targets, { 
+            forcedSynth, 
+            incremental: true, 
+            skipSummary: true, 
+            hideLogs: true, 
+            deployTarget: opt?.deployTarget,
+        })
 
-        const programState = await getProgramFs().readJson<{ needsSynth?: boolean }>('__buildState__.json').catch(throwIfNotFileNotFoundError)
-        if (programState?.needsSynth) {
-            await doCompile(() => getProgramFs().writeJson('[#compile]__buildState__.json', {
-                ...programState,
-                needsSynth: false,
-            }))
+        const needsSynth = await getNeedsSynth()
+        if (needsSynth) {
+            await doCompile(true)
         } else {
             // In any kind of machine-to-machine interaction we shouldn't try to be smart like this
             // It's better to fail and say that the program should be compiled explicitly first.
@@ -1904,7 +1900,19 @@ type CompileOptions = CombinedOptions & {
     hideLogs?: boolean
     logSymEval?: boolean
     forcedInfra?: string[]
-    beforeSynthCommit?: () => Promise<void> | void
+    forcedSynth?: boolean
+}
+
+async function setNeedsSynth(val: boolean) {
+    await getProgramFs().writeJson('[#compile]__buildState__.json', {
+        needsSynth: val,
+    })
+}
+
+async function getNeedsSynth() {
+    const programState = await getProgramFs().readJson<{ needsSynth?: boolean }>('__buildState__.json').catch(throwIfNotFileNotFoundError)
+
+    return programState?.needsSynth
 }
 
 export async function compile(targets: string[], opt?: CompileOptions) {
@@ -1915,7 +1923,7 @@ export async function compile(targets: string[], opt?: CompileOptions) {
     const { entrypointsFile } = await runTask('compile', 'all', () => builder.emit(), 100)
 
     const deployTarget = config.csc.deployTarget
-    const needsSynth = deployTarget && entrypointsFile.entrypoints.length > 0
+    const needsSynth = deployTarget && (entrypointsFile.entrypoints.length > 0 || opt?.forcedSynth)
     const shouldSkipSynth = config.csc.sharedLib || opt?.skipSynth || config.csc.noSynth || config.csc.noInfra
     if (needsSynth && !shouldSkipSynth) {
         // Fetch any existing state in the background so we can enhance the output messages
@@ -1925,8 +1933,11 @@ export async function compile(targets: string[], opt?: CompileOptions) {
         const ext = (template as Mutable<TfJson>)['//'] ??= {}
         ext.deployTarget = deployTarget // Used to track what target was used in the last deployment
 
-        await writeTemplate(template)
-        await opt?.beforeSynthCommit?.()
+        await Promise.all([
+            writeTemplate(template),
+            opt?.forcedSynth ? setNeedsSynth(false) : undefined,
+        ])
+
         await commitProgram()
 
         if (!opt?.skipSummary) {
@@ -1937,9 +1948,7 @@ export async function compile(targets: string[], opt?: CompileOptions) {
         }
     } else {
         if (needsSynth && opt?.skipSynth) {
-            await getProgramFs().writeJson('[#compile]__buildState__.json', {
-                needsSynth: true,
-            })
+            await setNeedsSynth(true)
         }
         await commitProgram()
         view.done()
@@ -3254,192 +3263,3 @@ export async function convertBundleToSea(dir: string) {
     await createArchive(dir, `${dir}${process.platform === 'linux' ? `.tgz` : '.zip'}`, false)
 }
 
-const lazyNodeModules = [
-    'node:vm',
-    'node:http',
-    'node:https',
-    'node:repl',
-    'node:assert',
-    'node:stream',
-    'node:zlib',
-    'node:module',
-    'node:net',
-    'node:url',
-    'node:inspector',
-]
-
-export async function internalBundle(target?: string, opt: any = {}) {
-    const targetDouble = target?.split('-')
-    const resolved = resolveBuildTarget({ os: targetDouble?.[0] as any, arch: targetDouble?.[1] as any })
-    const os = resolved.os
-    const arch = resolved.arch
-
-    const libc = opt.libc
-    const external = ['esbuild', 'typescript', 'postject']
-    const isProdBuild = opt.production
-    const dirName = opt.stagingDir ?? `synapse-${os}-${arch}`
-    const outdir = path.resolve(getWorkingDir(), 'dist', dirName)
-
-    const isSea = opt.sea || opt.seaOnly
-    const hostTarget = resolveBuildTarget()
-    if (isSea && (hostTarget.os !== os || hostTarget.arch !== arch)) {
-        throw new Error(`Cross-platform builds are not supported for snapshots/SEAs`)
-    }
-
-    const shouldSign = false // opt.sign || isProdBuild
-    const bundledCliPath = path.resolve(outdir, 'dist/cli.js')
-
-    opt.lto ??= isProdBuild
-
-    const execPath = (name: string) => path.resolve(outdir, 'bin', `${name}${os === 'windows' ? '.exe' : ''}`)
-    const toolPath = (name: string) => path.resolve(outdir, 'tools', `${name}${os === 'windows' ? '.exe' : ''}`)
-
-    if (opt.integrationsOnly) {
-        return copyIntegrations(getRootDirectory(), outdir, opt.integration)
-    }
-
-    const nodePath = execPath('node')
-    const seaDest = execPath('synapse')
-
-    if (opt.seaOnly) {
-        const bundle = await createBundle()
-
-        return await makeSea(bundledCliPath, nodePath, seaDest, bundle.assets) 
-    }
-
-    async function bundleMain() {
-        const bundleOpt = {
-            external, 
-            minify: isProdBuild, 
-            lazyLoad: (isSea || opt.seaPrep) ? ['@cohesible/*', 'typescript', 'esbuild', ...lazyNodeModules] : [],
-            extraBuiltins: ['typescript', 'esbuild'],
-        }
-
-        if (isProdBuild && process.env.SKIP_SEA_MAIN) {
-            const bt = getBuildTargetOrThrow()
-            return bundleExecutable(
-                bt,
-                'dist/src/cli/index.js',
-                bundledCliPath,
-                bt.workingDirectory,
-                { sea: true, ...bundleOpt }
-            )
-        }
-
-        return bundlePkg(
-            'dist/src/cli/index.js',
-            getWorkingDir(), // TODO: we should bundle in an empty directory to prevent extraneous files from being used
-            bundledCliPath,
-            bundleOpt,
-        )
-    }
-
-    // TODO: external sourcemaps for the bundle/binary
-    async function createBundle() {
-        const res = await bundleMain()
-
-        // XXX: Patch the bundle
-        await getFs().writeFile(
-            bundledCliPath,
-            (await getFs().readFile(bundledCliPath, 'utf-8'))
-                .replace('#!/usr/bin/env node', 'var exports = {};')
-        )
-
-        const procFs = getDeploymentFs()
-
-        await getFs().writeFile(
-            path.resolve(outdir, 'dist', 'completions.sh'),
-            await procFs.readFile(path.resolve(getWorkingDir(), 'src', 'cli', 'completions', 'completion.sh'))
-        )
-
-        return res
-    }
-
-    async function bundleInstallScript() {
-        await bundleExecutable(
-            getBuildTargetOrThrow(),
-            'dist/src/cli/install.js',
-            path.resolve(outdir, 'dist', 'install.js')
-        )
-
-        // Used for uninstalling
-        if (resolved.os === 'windows') {
-            await getFs().writeFile(
-                path.resolve(outdir, 'dist', 'install.ps1'),
-                await getFs().readFile(path.resolve(getWorkingDir(), 'src', 'cli', 'install.ps1'))
-            )
-        }
-    }
-
-    await bundleInstallScript()
-
-    await createPackageForRelease(getWorkingDir(), outdir, { 
-        external, 
-        os, 
-        arch,
-        libc,
-        lto: opt.lto,
-        sign: shouldSign, 
-        snapshot: isSea || opt.seaPrep,
-        stripInternal: isProdBuild,
-        buildLicense: isProdBuild,
-        downloadOnly: opt.downloadOnly,
-    })
-
-    const bundle = await createBundle()
-    await copyIntegrations(getRootDirectory(), outdir, opt.integration)
-
-    if (resolved.os === 'windows') {
-        const shimPath = await buildWindowsShim()
-        await getFs().writeFile(
-            path.resolve(outdir, 'dist', 'shim.exe'),
-            await getFs().readFile(shimPath)
-        )
-    }
-
-    await makeExecutable(nodePath)
-    await makeExecutable(toolPath('terraform'))
-    if (isSea) {
-        await makeExecutable(toolPath('esbuild'))
-    }
-
-    const jsLibRelPath = path.join('zig', 'lib', 'js.zig')
-    const jsLib = await getFs().readFile(path.resolve('src', jsLibRelPath)).catch(throwIfNotFileNotFoundError)
-    if (jsLib) {
-        await getFs().writeFile(path.resolve(outdir, jsLibRelPath), jsLib)
-    }
-
-    if (isSea) {
-        await makeSea(bundledCliPath, nodePath, seaDest, bundle.assets, !shouldSign)
-        if (isProdBuild || opt.stagingDir || !!getCiType()) {
-            if (!opt.preserveSource) {
-                await getFs().deleteFile(bundledCliPath)
-            }
-            await getFs().deleteFile(nodePath)
-            await getFs().deleteFile(path.resolve(outdir, 'node_modules'))
-        }
-
-        if (shouldSign) {
-            await signWithDefaultEntitlements(seaDest)
-        }
-    } else {
-        await getFs().deleteFile(path.resolve(outdir, 'node_modules', '.bin')).catch(throwIfNotFileNotFoundError)
-    }
-
-    if (opt.seaPrep) {
-        const resolved = await resolveAssets(bundle.assets)
-        if (resolved) {
-            const assetsDest = path.resolve(outdir, 'assets')
-            for (const [k, v] of Object.entries(resolved)) {
-                await getFs().writeFile(
-                    path.resolve(assetsDest, k), 
-                    await getFs().readFile(v)
-                )
-            }
-        }
-    }
-
-    // darwin we use `.zip` for signing
-    const extname = opt.seaPrep || os === 'linux' ? '.tgz' : '.zip'
-    await createArchive(outdir, `${outdir}${extname}`, shouldSign && !opt.seaPrep)
-}

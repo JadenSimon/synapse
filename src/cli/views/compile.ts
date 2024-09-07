@@ -311,6 +311,7 @@ function showSimplePlanSummary(template: TfJson, target: string, entrypoints: st
     if (previousData?.state) {
         const moves = evaluateMoveCommands(template, previousData?.state)
         if (moves && moves.length > 0) {
+            getLogger().debug('Evaluated moves', moves)
             printLine(colorize('yellow', 'Detected possible refactors.'))
             printLine(`Run ${renderCmdSuggestion('migrate')} to proceed.`)
         }

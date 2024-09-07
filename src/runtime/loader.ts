@@ -119,6 +119,7 @@ export function createGetCredentials(auth: ReturnType<typeof createAuth>) {
 export interface BasicDataRepository {
     getDataSync(hash: string): Uint8Array
     getDataSync(hash: string, encoding: BufferEncoding): string
+    getMetadata(hash: string, source: string): ArtifactMetadata | undefined
     getDiskPath?(fileName: string): string
 }
 
@@ -131,6 +132,9 @@ interface ModuleLoaderOptions {
     readonly deserializer?: typeof resolveValue
     readonly typescriptLoader?: (fileName: string, format?: 'cjs' | 'esm') => string
     readonly dataRepository?: BasicDataRepository
+
+    // Only tests are dependent on this
+    readonly registerPointerDependencies?: (pointer: DataPointer) => Promise<any> | any
 }
 
 function createDefaultDataRepo(fs: Pick<SyncFs, 'readFileSync'>, dataDir: string): BasicDataRepository {
@@ -153,7 +157,14 @@ function createDefaultDataRepo(fs: Pick<SyncFs, 'readFileSync'>, dataDir: string
         return fs.readFileSync(getObjectPath(dataDir, hash))
     }
 
-    return { getDataSync }
+    function getMetadata(hash: string, storeHash: string) {
+        const store = JSON.parse(getDataSync(storeHash, 'utf-8'))
+        const m = store.type === 'flat' ? store.artifacts[hash] : undefined
+
+        return m
+    }
+
+    return { getDataSync, getMetadata }
 }
 
 export function hydratePointers(repo: BasicDataRepository, id: DataPointer) {
@@ -163,8 +174,7 @@ export function hydratePointers(repo: BasicDataRepository, id: DataPointer) {
         return data
     }
 
-    const store = JSON.parse(repo.getDataSync(storeHash, 'utf-8'))
-    const m = store.type === 'flat' ? store.artifacts[hash] : undefined
+    const m = repo.getMetadata(hash, storeHash)
     if (!m?.pointers) {
         return data
     }
@@ -1048,16 +1058,25 @@ export function createModuleLoader(
         const ctx = opt?.context ?? getDefaultContext()
 
         function createScript(text: string, name: string, cacheKey?: string) {
+            const req = _createRequire(m.id, ctx)
+
             return createScriptModule(
                 ctx?.vm,
                 text,
                 name,
-                _createRequire(m.id, ctx),
+                req,
                 codeCache,
                 cacheKey,
                 sourceMapParser,
                 getWrappedProcess(ctx),
-                id => _createRequire(m.id, ctx)(id),
+                id => {
+                    // TODO: frontload this in tests?
+                    if (options?.registerPointerDependencies && isDataPointer(id)) {
+                        return options.registerPointerDependencies(id).then(() => req(id))
+                    }
+
+                    return req(id)
+                },
                 opt?.importModuleDynamically,
                 // m.cjs,
             ) 

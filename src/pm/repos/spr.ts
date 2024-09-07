@@ -171,14 +171,19 @@ export function createSynapsePackageRepo(): PackageRepository {
     }
 }
 
-export async function downloadSynapsePackage(info: PackageInfo, dest: string) {
+export async function downloadSynapsePackageTarball(info: PackageInfo, dest?: string) {
     const integrity = info.resolved?.integrity
     if (!integrity?.startsWith('sha256:')) {
-        throw new Error(`Missing integrity for package: ${info.name} [destination: ${dest}]`)
+        throw new Error(`Missing integrity for package: ${info.name}${dest ? `[destination: ${dest}]` : ''}`)
     }
 
     const publishedHash = integrity.slice('sha256:'.length)
-    const tarball = await downloadPackage(info.name, publishedHash)
+
+    return downloadPackage(info.name, publishedHash)
+}
+
+export async function downloadSynapsePackage(info: PackageInfo, dest: string) {
+    const tarball = await downloadSynapsePackageTarball(info, dest)
     const files = extractTarball(tarball)
     await Promise.all(files.map(async f => {
         const absPath = path.resolve(dest, f.path)

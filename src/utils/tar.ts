@@ -219,3 +219,38 @@ export async function extractFileFromZip(zip: Buffer, fileName: string) {
 
     return res as any as Buffer
 }
+
+export async function listFilesInZip(zip: Buffer) {
+    if (!(await hasBsdTar())) {
+        const tmp = path.resolve(process.cwd(), 'dist', `tmp-${randomUUID()}.zip`)
+        await getFs().writeFile(tmp, zip)
+        const res = await runCommand('unzip', ['-l', tmp]).finally(async () => {
+            await getFs().deleteFile(tmp)
+        })
+
+        // first three lines and last two lines we don't care
+        const lines = res.trim().split('\n').slice(3, -2)
+        return lines.map(l => {
+            const [length, date, time, name] = l.trim().split(/\s+/)
+
+            return name
+        })
+    }
+
+    if (process.platform === 'win32') {
+        const tmp = path.resolve(process.cwd(), 'dist', `tmp-${randomUUID()}.zip`)
+        await getFs().writeFile(tmp, zip)
+        const res = await runCommand('tar', ['-tzf', tmp]).finally(async () => {
+            await getFs().deleteFile(tmp)
+        })
+    
+        return res.split(/\r?\n/).map(x => x.trim()).filter(x => !!x)
+    }
+
+    // Only works with `bsdtar`
+    const res = await runCommand('tar', ['-tzf-'], {
+        input: zip,
+    })
+
+    return res.split(/\r?\n/).map(x => x.trim()).filter(x => !!x)
+}

@@ -132,6 +132,7 @@ export async function getModuleLoader(wrapConsole = true, useThisContext = false
                 // it prevents it from being used as a fast-call receiver
                 // in another context
                 useThisContext,
+                registerPointerDependencies,
             }            
         )
 
@@ -281,6 +282,7 @@ export async function createSessionContext(programHash?: string): Promise<Sessio
                 codeCache,
                 deserializer: resolveValue,
                 dataRepository,
+                registerPointerDependencies: pkgService.registerPointerDependencies,
             }            
         )
 

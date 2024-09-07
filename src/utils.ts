@@ -1249,7 +1249,6 @@ export function createTrie<T, K extends Iterable<string> = string>() {
 
     function* traverse(key: K) {
         let node = root
-        // yield ['', node.value] as const
 
         for (const k of key) {
             node = node.children[k]

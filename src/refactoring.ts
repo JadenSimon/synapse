@@ -1919,31 +1919,34 @@ export function evaluateMoveCommands(template: TfJson, state: TfState) {
             for (const r of matchedResources) {
                 if (conflictedFrom.has(`${r.type}.${r.name}`)) continue
 
+                // This can happen if we already create a new resource instead of moving it
+                if (state.resources.find(x => x.type === r.type && x.name === k)) continue
+
                 const from = `${r.type}.${r.name}`
                 const to = `${r.type}.${k}`
-                if (from !== to) {
-                    const conflicts: number[] = []
-                    for (let i = 0; i < moved.length; i++) {
-                        if ((moved[i].from === from || moved[i].to === to) && !(moved[i].from === from && moved[i].to === to)) {
-                            conflicts.push(i)
-                        }
+                if (from === to) continue
+
+                const conflicts: number[] = []
+                for (let i = 0; i < moved.length; i++) {
+                    if ((moved[i].from === from || moved[i].to === to) && !(moved[i].from === from && moved[i].to === to)) {
+                        conflicts.push(i)
                     }
-
-                    if (conflicts.length > 0) {
-                        getLogger().debug(`skipping refactor match due conflicting move: ${from} ---> ${to}`)
-
-                        for (const index of conflicts.reverse()) {
-                            const { from, to } = moved[index]
-                            conflictedFrom.add(from)
-                            conflictedTo.add(to)
-                            moved.splice(index, 1)
-                        }
-
-                        continue
-                    }
-
-                    moved.push({ from, to })
                 }
+
+                if (conflicts.length > 0) {
+                    getLogger().debug(`skipping refactor match due conflicting move: ${from} ---> ${to}`)
+
+                    for (const index of conflicts.reverse()) {
+                        const { from, to } = moved[index]
+                        conflictedFrom.add(from)
+                        conflictedTo.add(to)
+                        moved.splice(index, 1)
+                    }
+
+                    continue
+                }
+
+                moved.push({ from, to })
             }
         }
     }

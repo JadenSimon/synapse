@@ -1,5 +1,6 @@
 import * as path from 'node:path'
 import * as builder from '../build/builder'
+import * as github from '../utils/github'
 import { runCommand } from "../utils/process"
 import { getLogger } from '../logging'
 import { getGlobalCacheDirectory, getGlobalZigBuildDir, getTempZigBuildDir, getWorkingDir } from '../workspaces'
@@ -10,9 +11,9 @@ import { getProgramFs, NativeModule } from '../artifacts'
 import { ExportedFn, generateTsZigBindings, getImportedModulesFromFile } from './ast'
 import { getFileHasher } from '../compiler/incremental'
 import { getJsLibPath, getZigPath, registerZigProvider } from './installer'
-import { downloadNodeLib } from '../cli/buildInternal'
 import { getZigImports } from '../compiler/entrypoints'
 import { toAbsolute } from '../build-fs/pointers'
+import { extractFileFromZip, listFilesInZip } from '../utils/tar'
 
 // FIXME: ReferenceError: Cannot access 'synDirName' before initialization
 const getZigCacheDir = () => path.resolve(getGlobalCacheDirectory(), 'zig')
@@ -817,4 +818,48 @@ export async function compileAllZig(files: string[], config: ResolvedProgramConf
             getLogger().log('Compiled zig file', res)
         }
     }
+}
+
+export async function downloadNodeLib(owner = 'Cohesible', repo = 'node') {
+    const dest = path.resolve('dist', 'node.lib')
+    if (await getFs().fileExists(dest)) {
+        return dest
+    }
+
+    const assetName = 'node-lib-windows-x64'
+
+    async function downloadAndExtract(url: string) {
+        const archive = await github.fetchData(url)
+        const files = await listFilesInZip(archive)
+        if (files.length === 0) {
+            throw new Error(`Archive contains no files: ${url}`)
+        }
+    
+        const file = await extractFileFromZip(archive, files[0])
+        await getFs().writeFile(path.resolve('dist', 'node.lib'), file)
+        getLogger().log('Downloaded node.lib to dist/node.lib')
+
+        return dest
+    }
+
+    if (repo === 'node') {
+        const release = await github.getRelease(owner, repo)
+        const asset = release.assets.find(a => a.name === `${assetName}.zip`)
+        if (!asset) {
+            throw new Error(`Failed to find "${assetName}" in release "${release.name} [tag: ${release.tag_name}]"`)
+        }
+
+        return downloadAndExtract(asset.browser_download_url)
+    }
+
+    const artifacts = (await github.listArtifacts(owner, repo)).sort(
+        (a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime()
+    )
+
+    const match = artifacts.find(a => a.name === assetName)
+    if (!match) {
+        return
+    }
+
+    return downloadAndExtract(match.archive_download_url)
 }

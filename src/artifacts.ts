@@ -5,7 +5,7 @@ import type { ExternalValue, PackageInfo } from './runtime/modules/serdes'
 import { getLogger, runTask } from './logging'
 import { Mutable, acquireFsLock, createRwMutex, createTrie, deepClone, getHash, isNonNullable, keyedMemoize, memoize, sortRecord, throwIfNotFileNotFoundError, tryReadJson } from './utils'
 import type { TerraformPackageManifest, TfJson } from './runtime/modules/terraform'
-import { BuildTarget, Deployment, Program, getBuildDir, getProgramInfoFromDeployment, getRemoteProjectId, getRootDir, getRootDirectory, getTargetDeploymentIdOrThrow, getWorkingDir, resolveProgramBuildTarget, toProgramRef } from './workspaces'
+import { BuildTarget, isRemoteDisabled, getBuildDir, getProgramInfoFromDeployment, getRemoteProjectId, getRootDir, getRootDirectory, getTargetDeploymentIdOrThrow, getWorkingDir, resolveProgramBuildTarget, toProgramRef } from './workspaces'
 import {  NpmPackageInfo } from './pm/packages'
 import { TargetsFile, readPointersFile } from './compiler/host'
 import { TarballFile } from './utils/tar'
@@ -263,6 +263,7 @@ interface RootArtifactStore {
     getMetadata(hash: string): Record<string, ArtifactMetadata> | undefined
     getMetadata(hash: string, source: string): ArtifactMetadata
     getMetadata2(pointer: string): Promise<ArtifactMetadata>
+    getMetadata2(hash: string, source: string): Promise<ArtifactMetadata>
 
     resolveArtifact(hash: string, opt: ResolveArtifactOpts & { sync: true }): string
     resolveArtifact(hash: string, opt?: ResolveArtifactOpts): Promise<string> | string
@@ -3643,7 +3644,14 @@ function getRepository(fs: Fs & SyncFs, buildDir: string) {
         return getStoreSync(storeHash).getMetadata(hash, storeHash)
     }
 
-    async function getMetadata2(pointer: string) {
+    async function getMetadata2(pointer: string): Promise<ArtifactMetadata>
+    async function getMetadata2(hash: string, source: string): Promise<ArtifactMetadata>
+    async function getMetadata2(pointerOrHash: string, source?: string) {
+        if (source) {
+            return _getMetadata(pointerOrHash, source, true)
+        }
+
+        const pointer = pointerOrHash
         if (!isDataPointer(pointer)) {
             throw new Error('Not implemented')
         }
@@ -5025,10 +5033,8 @@ async function syncHeads(repo: DataRepository, remote: RemoteArtifactRepository,
     }
 }
 
-const shouldUseRemote = !!process.env['SYNAPSE_SHOULD_USE_REMOTE']
-
 export async function syncRemote(projectId: string, deploymentId: string) {
-    if (!shouldUseRemote) {
+    if (isRemoteDisabled()) {
         return
     }
 

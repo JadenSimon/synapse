@@ -4,7 +4,7 @@ import { mergeBuilds, pruneBuild, getInstallation, writeSnapshotFile, getProgram
 import {  NpmPackageInfo, getDefaultPackageInstaller, installFromSnapshot, testResolveDeps } from './packages'
 import { getBinDirectory, getSynapseDir, getLinkedPackagesDirectory, getToolsDirectory, getUserEnvFileName, getWorkingDir, listPackages, resolveProgramBuildTarget, SynapseConfiguration, getUserSynapseDirectory, setPackage, BuildTarget, findDeployment, getOrCreateRemotePackage } from '../workspaces'
 import { gunzip, gzip, isNonNullable, keyedMemoize, linkBin, makeExecutable, memoize, throwIfNotFileNotFoundError, tryReadJson } from '../utils'
-import { Fs, ensureDir } from '../system'
+import { Fs, ensureDir, readFileWithStats } from '../system'
 import { glob } from '../utils/glob'
 import { getLogger, runTask } from '../logging'
 import { homedir } from 'node:os'
@@ -14,9 +14,9 @@ import { createCommandRunner, patchPath, runCommand } from '../utils/process'
 import { PackageJson, ResolvedPackage, getCompiledPkgJson, getCurrentPkg, getImmediatePackageJsonOrThrow, getPackageJson } from './packageJson'
 import { readPathMapKey, setPathKey } from '../cli/config'
 import { getEntrypointsFile } from '../compiler/programBuilder'
-import { createPackageForRelease, createSynapseTarball } from '../cli/buildInternal'
+import { createPackageForRelease } from '../cli/buildInternal'
 import * as registry from '@cohesible/resources/registry'
-import { extractTarball } from '../utils/tar'
+import { createTarball, extractTarball } from '../utils/tar'
 
 const getDependentsFilePath = () => path.resolve(getUserSynapseDirectory(), 'packageDependents.json')
 
@@ -955,3 +955,20 @@ export function createNpmLikeCommandRunner(pkgDir: string, env?: Record<string, 
     })
 }
 
+export async function createSynapseTarball(dir: string) {
+    const files = await glob(getFs(), dir, ['**/*', '**/.synapse'])
+    const tarball = createTarball(await Promise.all(files.map(async f => {
+        const { data, stats } = await readFileWithStats(f)
+
+        return {
+            contents: Buffer.from(data),
+            mode: 0o755,
+            path: path.relative(dir, f),
+            mtime: Math.round(stats.mtimeMs),
+        }
+    })))
+
+    const zipped = await gzip(tarball)
+
+    return zipped
+}

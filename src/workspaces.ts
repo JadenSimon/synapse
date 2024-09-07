@@ -1272,7 +1272,7 @@ export async function findRemotePackage(spec: string): Promise<string | undefine
         if (!app) continue
 
         const env = app.environments[bt.environmentName ?? app.defaultEnvironment ?? 'local']
-        if (!env.packageId) continue
+        if (!env?.packageId) continue
 
         const dir = v.workingDirectory ? path.resolve(bt.rootDirectory, v.workingDirectory) : bt.rootDirectory
         const pkgJson = await getPackageJson(getFs(), dir, false)
