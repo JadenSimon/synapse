@@ -2,7 +2,7 @@ import * as path from 'node:path'
 import * as zlib from 'node:zlib'
 import * as github from '../utils/github'
 import { getGlobalCacheDirectory, getRootDirectory, getUserSynapseDirectory, getWorkingDir, resolveProgramBuildTarget, toProgramRef } from '../workspaces'
-import { getBuildTargetOrThrow, getFs } from '../execution'
+import { getBuildTargetOrThrow, getFs, runWithContext } from '../execution'
 import { createTarball, extractFileFromZip, extractTarball, hasBsdTar, listFilesInZip } from '../utils/tar'
 import { PackageJson, getPackageJson } from '../pm/packageJson'
 import { downloadSource } from '../build/sources'
@@ -1113,10 +1113,14 @@ export async function main(...args: string[]) {
     }
 
     const target = args[0]?.startsWith('--') ? undefined : args[0]
+    const buildTarget = await resolveProgramBuildTarget(process.cwd())
 
-    return internalBundle(target, {
-        sea: parseFlag('sea'),
-        downloadOnly: parseFlag('downloadOnly'),
-        pipelined: parseOption('pipelined'),
-    })
+    return runWithContext(
+        { buildTarget },
+        () => internalBundle(target, {
+            sea: parseFlag('sea'),
+            downloadOnly: parseFlag('downloadOnly'),
+            pipelined: parseOption('pipelined'),
+        }),
+    )
 }
