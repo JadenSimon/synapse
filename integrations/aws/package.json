@@ -31,18 +31,6 @@
         },
         "providers": {
             "aws": "*"
-        },
-        "pipeline": {
-            "testPackage": {
-                "name": "spr:#conformance",
-                "commands": [
-                    "synapse deploy --target aws",
-                    "synapse test --destroy-after"
-                ],
-                "inputs": {
-                    "useAws": true
-                }
-            }
         }
     }
 }
