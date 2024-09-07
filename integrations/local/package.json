@@ -13,7 +13,7 @@
             "testPackage": {
                 "name": "spr:#conformance",
                 "commands": [
-                    "synapse test"
+                    "synapse test --destroy-after"
                 ],
                 "inputs": {
                     "foo": "bar2",
