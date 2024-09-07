@@ -32,3 +32,5 @@ export class Counter implements storage.Counter {
 
 
 core.addTarget(storage.Counter, Counter, 'local')
+
+// ok
