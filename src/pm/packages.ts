@@ -1885,9 +1885,7 @@ export async function getSynapseTarballs(deps: string[]) {
     const promises: Promise<[k: string, v: Buffer]>[] = []
     for (const [k, v] of Object.entries(manifest.roots)) {
         const info = manifest.packages[v.package]
-        if (info.type !== 'spr') {
-            throw new Error(`"${k}" is not a Synapse package: ${info.type}`)
-        }
+        if (info.type !== 'spr') continue
 
         promises.push(downloadSynapsePackageTarball(info).then(b => [k, b]))
     }
