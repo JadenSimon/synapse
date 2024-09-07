@@ -16,7 +16,8 @@
                     "synapse test"
                 ],
                 "inputs": {
-                    "foo": "bar2"
+                    "foo": "bar2",
+                    "destroyAfter": true
                 }
             }
         }
