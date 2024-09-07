@@ -26,8 +26,8 @@
             "target": "local"
         },
         "binaryDependencies": {
-            "node": "https://github.com/Cohesible/node.git",
-            "terraform": "https://github.com/Cohesible/terraform.git"
+            "node": "https://github.com/Cohesible/synapse-node-private.git",
+            "terraform": "https://github.com/Cohesible/synapse-terraform-private.git"
         },
         "devTools": {
             "zig": "0.13.0"

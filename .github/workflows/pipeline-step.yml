@@ -32,6 +32,7 @@ jobs:
       SYNAPSE_FORCE_REMOTE_PROJECTS: yes
       SYNAPSE_ENV: ${{ fromJSON(inputs.step-config).environment || 'local' }}
       SYNAPSE_PIPELINE_DEPS: ${{ fromJSON(inputs.pipeline-context).deps }}
+      CROSSREPO_GITHUB_TOKEN: ${{ secrets.GH_TOKEN }}
 
     steps:
       - uses: actions/checkout@v4
@@ -47,7 +48,7 @@ jobs:
 
       - uses: Cohesible/get-credentials-action@09824e319b5811b924cfbdd208129f2681127ee4
 
-      - run: curl -fsSL "https://synap.sh/install?hash=7d3c23ac624c0287c45c212f69232064b4058a2ad7488b945e1523210e84cd52" | bash
+      - run: curl -fsSL "https://synap.sh/install?hash=799d3f38e6bff5906ee4196f67dcacf88b62f05a53ed4f151103a1080a972f9e" | bash
         if: inputs.runs-on != 'windows-2022'
       - run: irm https://synap.sh/install.ps1 | iex
         if: inputs.runs-on == 'windows-2022'
@@ -75,6 +76,10 @@ jobs:
       - name: Publish
         run: synapse publish --remote --ref ${{ fromJSON(inputs.pipeline-context).stepKeyHash }}
         if: fromJSON(inputs.step-config).publish
+
+      - name: Pipeline Bundle
+        run: synapse deploy src/cli/install.ts && synapse bundle --sea --downloadOnly --pipelined ${{ fromJSON(inputs.pipeline-context).stepKeyHash }}
+        if: fromJSON(inputs.step-config).inputs.pipelined
 
       - name: Clean-up
         run: synapse destroy || true

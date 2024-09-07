@@ -1,0 +1,10 @@
+{
+    "steps": {
+        "internal-bundle": {
+            "dependsOn": ["synapse", "synapse-aws", "synapse-local", "synapse-websites", "synapse-react"],
+            "inputs": {
+                "pipelined": true
+            }
+        }
+    }
+}
