@@ -1906,6 +1906,7 @@ export async function installModules(dir: string, deps: Record<string, string>, 
 
     const res = await writeToNodeModules(fs, mapping, dir, undefined, { mode: 'all', hoist: false })
     await repo.close()
+    getNpmPackageRepo.clear()
 
     return { res, mapping }
 }
