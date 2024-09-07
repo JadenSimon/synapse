@@ -99,7 +99,7 @@ async function publishTarball(tarball: Buffer, pkgJson: PackageJson, opt?: Publi
     const client = registry.createClient()
     const { hash } = await client.uploadPackage(remotePkgId, tarball)
     if (opt?.ref) {
-        getLogger().log(`Setting package ref: ${opt.ref} --> ${hash}`)
+        getLogger().log(`Setting package ref: ${opt.ref} --> ${hash} [pkgId: ${remotePkgId}]`)
 
         return client.setRef(remotePkgId, opt.ref, hash)
     }

@@ -22,7 +22,7 @@ interface Postject {
 function loadFromRelPath() {
     const selfPath = getSelfPath()
     if (!selfPath) {
-        return
+        throw new Error('Missing self path')
     }
 
     return createRequire(selfPath)('./postject')
