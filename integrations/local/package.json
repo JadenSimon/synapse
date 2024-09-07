@@ -16,7 +16,8 @@
                     "synapse test"
                 ],
                 "inputs": {
-                    "foo": "bar"
+                    "foo": "bar",
+                    "foo2": "bar2"
                 }
             }
         }
