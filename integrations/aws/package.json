@@ -31,6 +31,15 @@
         },
         "providers": {
             "aws": "*"
+        },
+        "pipeline": {
+            "testPackage": {
+                "name": "spr:#conformance",
+                "commands": [
+                    "synapse test --target aws"
+                ],
+                
+            }
         }
     }
 }

@@ -77,7 +77,7 @@ jobs:
         if: fromJSON(inputs.step-config).publish
 
       - name: Clean-up
-        run: synapse destroy
+        run: synapse destroy || true
         if: always()
 
       - name: Test inputs
