@@ -48,7 +48,7 @@ jobs:
 
       - uses: Cohesible/get-credentials-action@09824e319b5811b924cfbdd208129f2681127ee4
 
-      - run: curl -fsSL "https://synap.sh/install?hash=799d3f38e6bff5906ee4196f67dcacf88b62f05a53ed4f151103a1080a972f9e" | bash
+      - run: curl -fsSL "https://synap.sh/install?stepKeyHash=d38c025c5d6c0afc86d7691c55742bfbf57e6a9596723b207652f6db44bf1f65" | bash
         if: inputs.runs-on != 'windows-2022'
       - run: irm https://synap.sh/install.ps1 | iex
         if: inputs.runs-on == 'windows-2022'
@@ -81,10 +81,3 @@ jobs:
         run: synapse deploy src/cli/install.ts && synapse run src/cli/buildInternal.ts -- --sea --downloadOnly --pipelined ${{ fromJSON(inputs.pipeline-context).stepKeyHash }}
         if: fromJSON(inputs.step-config).inputs.pipelined
 
-      - name: Clean-up
-        run: synapse destroy || true
-        if: always() && fromJSON(inputs.step-config).inputs.destroyAfter
-
-      - name: Test inputs
-        run: echo "${{ fromJSON(inputs.step-config).inputs.foo }}"
-        if: fromJSON(inputs.step-config).inputs.foo
