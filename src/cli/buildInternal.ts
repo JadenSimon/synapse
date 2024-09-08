@@ -7,7 +7,7 @@ import { createTarball, extractFileFromZip, extractTarball, hasBsdTar, listFiles
 import { PackageJson, getPackageJson } from '../pm/packageJson'
 import { downloadSource } from '../build/sources'
 import { buildGoProgram } from '../build/go'
-import { getSynapseTarballs, installModules } from '../pm/packages'
+import { donwloadSynapsePackages, installModules } from '../pm/packages'
 import { createMergedView, createSynapseTarball, publishToRemote } from '../pm/publish'
 import { Snapshot, consolidateBuild, createSnapshot, dumpData, getDataRepository, getDeploymentFs, getModuleMappings, getProgramFs, getSnapshotPath, linkFs, pruneBuild, writeSnapshotFile } from '../artifacts'
 import { QualifiedBuildTarget, resolveBuildTarget } from '../build/builder'
@@ -46,13 +46,9 @@ export async function copyIntegrations(rootDir: string, dest: string, included?:
 export async function downloadIntegrations(dest: string, included?: string[]) {
     const packagesDir = path.resolve(dest, 'packages')
     const include = included ? new Set(included) : undefined
-
     const deps = Object.keys(integrations).filter(k => !include || include.has(k))
-    const tarballs = await getSynapseTarballs(deps)
 
-    for (const [k, v] of Object.entries(tarballs)) {
-        await getFs().writeFile(path.resolve(packagesDir, k), v)
-    }
+    await donwloadSynapsePackages(packagesDir, deps)
 }
 
 const baseUrl = 'https://nodejs.org/download/release'
@@ -1083,7 +1079,7 @@ export async function internalBundle(target?: string, opt: any = {}) {
         return publishToRemote({
             ref: opt.pipelined,
             tarballPath,
-            visibility: 'public',
+            visibility: opt.visibility === 'public' ? 'public' : opt.visibility === 'private' ? 'private' : undefined,
         })
     }
 
@@ -1127,6 +1123,7 @@ export async function main(...args: string[]) {
             sea: parseFlag('sea'),
             downloadOnly: parseFlag('downloadOnly'),
             pipelined: parseOption('pipelined'),
+            visibility: parseOption('visibility'),
         }),
     )
 }

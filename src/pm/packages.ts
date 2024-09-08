@@ -30,7 +30,7 @@ import { cleanDir, fastCopyDir, removeDir } from '../zig/fs-ext'
 import { colorize, printLine } from '../cli/ui'
 import { OptimizedPackageManifest, PackageManifest, PublishedPackageJson, createManifestRepo, createMultiRegistryClient, createNpmRegistryClient } from './manifests'
 import { createGitHubPackageRepo, downloadGitHubPackage, githubPrefix } from './repos/github'
-import { createSynapsePackageRepo, downloadSynapsePackage, downloadSynapsePackageTarball, getPipelineDeps, sprPrefix } from './repos/spr'
+import { createSynapsePackageRepo, downloadSynapsePackage, getPipelineDeps, sprPrefix } from './repos/spr'
 import { getTsPathMappings } from '../compiler/entrypoints'
 import { getOutputFilename, getResolvedTsConfig } from '../compiler/config'
 import { execCommand } from '../utils/process'
@@ -1875,22 +1875,29 @@ function getNameAndScheme(name: string) {
     }
 }
 
-export async function getSynapseTarballs(deps: string[]) {
+export async function donwloadSynapsePackages(dest: string, deps: string[]) {
     const fs = getFs()
     const repo = createSprRepoWrapper(fs, getBuildTargetOrThrow().projectId, getWorkingDir())
-    const specs = Object.fromEntries(deps.map(d => [d, `spr:#${d}`]))
+    const specs = Object.fromEntries(deps.map(d => [d, `${sprPrefix}#${d}`]))
     const result = await resolveDepsGreedy(specs, repo)
     const manifest = await toPackageManifestFromTree(repo, result)
 
-    const promises: Promise<[k: string, v: Buffer]>[] = []
+    const promises: Promise<unknown>[] = []
     for (const [k, v] of Object.entries(manifest.roots)) {
-        const info = manifest.packages[v.package]
-        if (info.type !== 'spr') continue
+        if (!deps.includes(k)) continue
 
-        promises.push(downloadSynapsePackageTarball(info).then(b => [k, b]))
+        const info = manifest.packages[v.package]
+        if (info.type !== 'spr') {
+            throw new Error(`"${k}" is not a Synapse package: ${info.type}`)
+        }
+
+        const pkgDir = path.resolve(dest, k)
+        getLogger().log(`Downloading specifier "${k}" [integrity: ${info.resolved?.integrity}] to ${pkgDir}`)
+
+        promises.push(downloadSynapsePackage(info, pkgDir))
     }
 
-    return Object.fromEntries(await Promise.all(promises))
+    await Promise.all(promises)
 }
 
 export async function installModules(dir: string, deps: Record<string, string>, target?: Partial<QualifiedBuildTarget>) {
