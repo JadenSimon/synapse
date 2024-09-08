@@ -66,3 +66,4 @@ export interface JSXRuntime<T = JSXNode, U = JSXContext<any, T>> {
     // readonly createContext: (value: any) => U 
     readonly renderStream?: RenderStreamFn<T>
 }
+
