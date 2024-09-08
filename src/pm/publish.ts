@@ -101,7 +101,17 @@ async function publishTarball(tarball: Buffer, pkgJson: PackageJson, opt?: Publi
     if (opt?.ref) {
         getLogger().log(`Setting package ref: ${opt.ref} --> ${hash} [pkgId: ${remotePkgId}]`)
 
-        return client.setRef(remotePkgId, opt.ref, hash)
+        await client.setRef(remotePkgId, opt.ref, hash)
+
+        // TODO: only make this ref public
+        if (opt?.visibility === 'public') {
+            await client.updatePackageMetadata({
+                packageId: remotePkgId,
+                public: true,
+            })
+        }
+
+        return
     }
 
     await client.publishPackage({
@@ -964,7 +974,7 @@ export async function createSynapseTarball(dir: string) {
             contents: Buffer.from(data),
             mode: 0o755,
             path: path.relative(dir, f),
-            mtime: Math.round(stats.mtimeMs),
+            mtime: Math.round(stats.mtimeMs / 1000),
         }
     })))
 
