@@ -1,0 +1,11 @@
+{
+    "name": "pkg2",
+    "dependencies": {
+        "pkg1": "spr:#pkg1"
+    },
+    "synapse": {
+        "pipeline": {
+            "test": true
+        }
+    }
+}

@@ -1,0 +1,9 @@
+{
+    "name": "pkg1",
+    "exports": "./main.ts",
+    "synapse": {
+        "pipeline": {
+            "deploy": true
+        }
+    }
+}
