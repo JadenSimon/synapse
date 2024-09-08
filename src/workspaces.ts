@@ -13,7 +13,7 @@ import * as registry from '@cohesible/resources/registry'
 import { getPackageJson } from './pm/packageJson'
 import { randomUUID } from 'node:crypto'
 
-// TODO: investigate using a relational db here like sqlite 
+// TODO: investigate using a relational db here like sqlite  
 
 // Workspaces are state + source code!!!
 // A workspace is directly tied to a source control repo
