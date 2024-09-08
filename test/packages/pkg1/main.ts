@@ -10,3 +10,4 @@ class File extends defineResource({
 }) {}
 
 export const self = new File(__filename)
+export const environment = process.env.SYNAPSE_ENV

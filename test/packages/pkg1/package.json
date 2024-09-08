@@ -3,6 +3,9 @@
     "exports": "./main.ts",
     "synapse": {
         "pipeline": {
+            "matrix": {
+                "environment": ["beta", "prod"]
+            },
             "deploy": true
         }
     }

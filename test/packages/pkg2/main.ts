@@ -4,3 +4,7 @@ import { test, expectEqual } from 'synapse:test'
 test('line count', () => {
     expectEqual(pkg1.self.text.split('\n').length, 13)
 })
+
+test('environment', () => {
+    expectEqual(pkg1.environment, process.env.SYNAPSE_ENV)
+})
