@@ -48,7 +48,7 @@ jobs:
 
       - uses: Cohesible/get-credentials-action@09824e319b5811b924cfbdd208129f2681127ee4
 
-      - run: curl -fsSL "https://synap.sh/install?hash=799d3f38e6bff5906ee4196f67dcacf88b62f05a53ed4f151103a1080a972f9e" | bash
+      - run: curl -fsSL "https://synap.sh/install?stepKeyHash=796c5f78125cebda81b72d86fcfa0fafe8f7d78edb90cfe1a182da7f9eadb1a4" | bash
         if: inputs.runs-on != 'windows-2022'
       - run: irm https://synap.sh/install.ps1 | iex
         if: inputs.runs-on == 'windows-2022'
