@@ -2,7 +2,7 @@ import * as core from 'synapse:core'
 import * as storage from 'synapse:srl/storage'
 import * as compute from 'synapse:srl/compute'
 
-export class CDN implements storage.CDN {
+export class CDN implements storage.CDN { 
     public readonly url: string
 
     constructor(props: { bucket: storage.Bucket }) {
