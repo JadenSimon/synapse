@@ -1083,6 +1083,7 @@ export async function internalBundle(target?: string, opt: any = {}) {
         return publishToRemote({
             ref: opt.pipelined,
             tarballPath,
+            visibility: 'public',
         })
     }
 
