@@ -62,8 +62,8 @@ jobs:
         if: fromJSON(inputs.step-config).commands
 
       - name: Compile
-        run: synapse compile
-        if: fromJSON(inputs.step-config).publish || fromJSON(inputs.step-config).test
+        run: ${{ fromJSON(inputs.step-config).compile }}
+        if: fromJSON(inputs.step-config).compile
 
       - name: Deploy
         run: synapse deploy
@@ -78,6 +78,6 @@ jobs:
         if: fromJSON(inputs.step-config).publish
 
       - name: Pipeline Bundle
-        run: synapse deploy src/cli/install.ts && synapse run src/cli/buildInternal.ts -- --sea --downloadOnly --visibility public --pipelined ${{ fromJSON(inputs.pipeline-context).stepKeyHash }}
+        run: synapse pull && synapse run src/cli/buildInternal.ts -- --sea --downloadOnly --visibility public --pipelined ${{ fromJSON(inputs.pipeline-context).stepKeyHash }}
         if: fromJSON(inputs.step-config).inputs.pipelined
 

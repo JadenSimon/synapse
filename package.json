@@ -31,6 +31,10 @@
         },
         "devTools": {
             "zig": "0.13.0"
+        },
+        "pipeline": {
+            "compile": "synapse pull && synapse deploy src/cli/install.ts --sync-after",
+            "test": "synapse build && SYNAPSE_CMD=$(pwd)/dist/bin/synapse synapse run src/testing/internal.ts && synapse clean && ./dist/bin/synapse compile"
         }
     }
 }
