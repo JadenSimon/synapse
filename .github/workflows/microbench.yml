@@ -11,5 +11,5 @@ jobs:
       contents: read
     steps: 
       - uses: actions/checkout@v3
-      - run: curl -fsSL "https://synap.sh/install?hash=48f4ce0ae83d1b8b1f7bee0d3fba881abf744fb12fbae4f37a29d0beebff150b" | bash
+      - run: curl -fsSL "https://synap.sh/install?hash=ed04507a7a71e34034158b3739810780aa2a9e4e94f75a7631108facbd721672" | bash
       - run: cd bench && synapse scripts/bench.ts
