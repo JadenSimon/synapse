@@ -19,6 +19,7 @@ interface ParsedConfig {
     readonly include?: string[]
     readonly exclude?: string[]
     readonly previousOptions?: ts.CompilerOptions
+    readonly isCached?: boolean
 }
 
 // TODO:
@@ -31,22 +32,24 @@ interface ParsedConfig {
 // "verbatimModuleSyntax": true,
 // "noEmit": true,
 
-function getDefaultTsConfig(targetFiles: string[]) {
-    return {
-        include: targetFiles,
-        compilerOptions: {
-          target: 'ES2022',
-          module: 'NodeNext',
-          moduleResolution: 'NodeNext',
-          resolveJsonModule: true,
-          sourceMap: true,
-          esModuleInterop: true,
-          strict: true,
-          skipLibCheck: true,
-          alwaysStrict: true,
-          forceConsistentCasingInFileNames: true,
-        },
-    }
+function applyDefaults(opt: ts.CompilerOptions) {
+    // FIXME: move to esm (high priority)
+    // Also a lot of these should be defaults
+    opt.target ??= ts.ScriptTarget.ES2022 // `esnext` I think fails w/ `_` as an ident?
+    opt.module ??= ts.ModuleKind.NodeNext
+    opt.moduleResolution ??= ts.ModuleResolutionKind.NodeNext
+    opt.resolveJsonModule ??= true
+    opt.sourceMap ??= true
+    opt.esModuleInterop ??= true
+    opt.strict ??= true
+    opt.skipLibCheck ??= true
+    opt.alwaysStrict ??= true
+    opt.composite ??= true
+
+    // This is probably the most "breaking" default. 
+    // But honestly, `tsc` should either be case-insensitive always _or_ this should be the default
+    // There's absolutely ZERO reason to be writing source files with different casing.
+    opt.forceConsistentCasingInFileNames ??= true
 }
 
 function checkTsDiags(diags: ts.Diagnostic[]) {
@@ -67,11 +70,43 @@ function checkTsDiags(diags: ts.Diagnostic[]) {
     throw new Error(`Failed to parse "tsconfig.json":\n\t${formatted}`)
 }
 
-function getTsConfigFromText(configText: string | void, fileName: string, targetFiles?: string[]) {
+// We don't want to (implicitly) include nested programs
+async function gatherNestedDirs(baseDir: string) {
+    const dirs: string[] = []
+
+    async function scan(dir: string, checkForPackage = true) {
+        if (checkForPackage) {
+            const filesToCheck = ['package.json', 'tsconfig.json']
+            const exists = await Promise.all(
+                filesToCheck.map(f => getFs().fileExists(path.resolve(dir, f)))
+            )
+
+            if (exists.some(x => !!x)) {
+                dirs.push(dir)
+                return
+            }
+        }
+
+        const promises: Promise<void>[] = []
+        for (const f of await getFs().readDirectory(dir)) {
+            if (f.type !== 'directory') continue
+    
+            promises.push(scan(path.resolve(dir, f.name)))
+        }
+        
+        await Promise.all(promises)
+    }
+
+    await scan(baseDir, false)
+
+    return dirs
+}
+
+function getTsConfigFromText(configText: string | void, fileName: string) {
     if (!configText) {
         getLogger().debug(`No tsconfig.json, using default`)
 
-        return getDefaultTsConfig(targetFiles ?? ['*'])
+        return {}
     }
 
     const parseResult = ts.parseConfigFileTextToJson(fileName, configText)
@@ -101,12 +136,9 @@ const notSupportedWarningOptions = [
 
 // TODO: does not handle the "extends" target changing
 async function getTsConfig(
-    fs: Fs, 
     workingDirectory: string, 
-    targetFiles?: string[],
     fileName = path.resolve(workingDirectory, 'tsconfig.json'), 
-    sys = ts.sys, 
-): Promise<ParsedConfig> {
+): Promise<Omit<ParsedConfig, 'files'>> {
     const [text, previousConfig] = await Promise.all([
         getFs().readFile(fileName, 'utf-8').catch(throwIfNotFileNotFoundError),
         getResolvedTsConfig()
@@ -115,14 +147,10 @@ async function getTsConfig(
     const sourceHash = text ? getHash(text) : ''
 
     function parse() {
-        const config = getTsConfigFromText(text, fileName, targetFiles)
-        const cmd = ts.parseJsonConfigFileContent(config, sys, workingDirectory, undefined, fileName)
+        const config = getTsConfigFromText(text, fileName)
+        const cmd = ts.parseJsonConfigFileContent(config, ts.sys, workingDirectory, undefined, fileName)
         checkTsDiags(cmd.errors)
-    
-        cmd.options.composite ??= true
-        cmd.options.alwaysStrict ??= true
-        cmd.options.sourceMap ??= true
-        cmd.options.skipLibCheck ??= true
+        applyDefaults(cmd.options)
     
         if (cmd.options.composite === false) {
             throw new Error('Programs cannot be compiled with `composite` set to `false`')
@@ -163,28 +191,42 @@ async function getTsConfig(
     const cmd: ParsedConfig['cmd'] = isCached
         ? { options: previousConfig.options, fileNames: [], raw: { include: previousConfig.include, exclude: previousConfig.exclude } }
         : parse()
-
-    // TODO: fail early if a file is outside of the root directory
-    const files = await runTask('glob', 'tsc-files', () => globTsFiles(fs, workingDirectory, cmd), 1)
-    if (isCached) {
-        cmd.fileNames = files
-    }
     
     // `include` and `exclude` are only for caching
     return { 
         cmd, 
-        files, 
         rootDir: cmd.options.rootDir!, 
         sourceHash, 
         include: cmd.raw?.include, 
         exclude: cmd.raw?.exclude,
         previousOptions: previousConfig?.options,
+        isCached,
     }
 }
 
+async function getTsConfigWithFiles(
+    fs: Fs, 
+    workingDirectory: string, 
+    fileName = path.resolve(workingDirectory, 'tsconfig.json'), 
+): Promise<ParsedConfig> {
+    const config = await getTsConfig(workingDirectory, fileName)
+
+    // TODO: fail early if a file is outside of the root directory
+    const files = await runTask('glob', 'tsc-files', () => globTsFiles(fs, workingDirectory, config.cmd), 1)
+    if (config.isCached) {
+        config.cmd.fileNames = files
+    }
+
+    return { ...config, files }
+}
+
 async function globTsFiles(fs: Fs, workingDir: string, cmd: ParsedConfig['cmd']) {
-    const exclude = cmd.raw?.exclude ?? ['node_modules']
-    const include = cmd.raw?.include ?? ['*']
+    const exclude = cmd.raw?.exclude ?? [
+        'node_modules', 
+        ...(await gatherNestedDirs(workingDir)).map(p => makeRelative(workingDir, p))
+    ]
+
+    const include = cmd.raw?.include ?? ['**/*']
     const files = await glob(fs, workingDir, include, exclude)
     const filtered = files.filter(f => !!f.match(/\.tsx?$/))
 
@@ -230,51 +272,12 @@ export interface ResolvedProgramConfig {
     readonly compiledEntrypoints?: string[]
 }
 
-// Discovers all potential entrypoints to a package via:
+// Discovers and transforms all potential entrypoints to a package via:
 // * `bin`
 // * `main`
 // * `module`
 // * `exports`
-function getEntrypointPatterns(pkg: PackageJson) {
-    const entrypoints: string[] = []
-
-    if (pkg.main) {
-        entrypoints.push(pkg.main)
-    }
-
-    if (pkg.module) {
-        entrypoints.push(pkg.module)
-    }
-
-    if (pkg.bin) {
-        if (typeof pkg.bin === 'string') {
-            entrypoints.push(pkg.bin)
-        } else {
-            for (const v of Object.values(pkg.bin)) {
-                entrypoints.push(v)
-            }
-        }
-    }
-
-    if (pkg.exports) {
-        // TODO: handle all cases
-        if (typeof pkg.exports === 'string') {
-            entrypoints.push(pkg.exports)
-        } else if (typeof pkg.exports === 'object') {
-            for (const [k, v] of Object.entries(pkg.exports)) {
-                if (!k.startsWith('.') || typeof v !== 'string') {
-                    continue
-                }
-
-                entrypoints.push(v)
-            }
-        }
-    }
-
-    return entrypoints
-}
-
-// Transforms all entrypoints to use the expected output file
+//
 // This allows you to write something like "src/cli/index.ts" in `package.json` instead of the output file
 function resolvePackageEntrypoints(pkg: PackageJson, dir: string, rootDir: string, opt: ts.CompilerOptions) {
     const res = { ...pkg }
@@ -308,7 +311,7 @@ function resolvePackageEntrypoints(pkg: PackageJson, dir: string, rootDir: strin
     }
 
     if (res.types) {
-        if (typeof res.types === 'string' ) {
+        if (typeof res.types === 'string') {
             res.types = resolve(res.types)
         }
     }
@@ -346,30 +349,6 @@ function resolvePackageEntrypoints(pkg: PackageJson, dir: string, rootDir: strin
     }
 }
 
-// TODO: this can be made more efficient by using `parsed.files`
-async function resolveEntrypoints(dir: string, patterns: string[], parsed: ParsedConfig) {
-    const resolvedPatterns = patterns.map(p => {
-        const rel = path.relative(
-            dir,
-            getInputFilename(parsed.rootDir, parsed.cmd.options, path.resolve(dir, p))
-        )
-
-        return rel.replace(/\/([^\/*]*\*[^\/*]*\/?)/, '/**/$1')
-    })
-
-    // Match `.tsx` as well
-    if (parsed.cmd.options.jsx !== undefined) {
-        for (const p of resolvedPatterns) {
-            const alt = p.replace(/\.ts$/, '.tsx')
-            if (p !== alt) {
-                resolvedPatterns.push(alt)
-            }
-        }
-    }
-
-    return await glob(getFs(), dir, resolvedPatterns, ['node_modules'])
-}
-
 async function resolvePackage(pkg: PackageJson, dir: string, parsed: ParsedConfig) {
     const compiled = resolvePackageEntrypoints(pkg, dir, parsed.rootDir, parsed.cmd.options)
 
@@ -381,7 +360,7 @@ async function resolvePackage(pkg: PackageJson, dir: string, parsed: ParsedConfi
 
 // Creates a package.json file for one-off scripts/experiments/etc.
 // This isn't exposed to the user
-function createSyntheticPackage(opt?: CompilerOptions, targetFiles?: string[]) {
+function createSyntheticPackage(opt?: CompilerOptions) {
     return {
         pkg: {
             "synapse": opt?.deployTarget ? {
@@ -411,12 +390,12 @@ function mergeConfigs<T>(...configs: (T | undefined)[]): Partial<T> {
     return res
 }
 
-export async function resolveProgramConfig(opt?: CompilerOptions, targetFiles?: string[], fs = getFs()): Promise<ResolvedProgramConfig> {
+export async function resolveProgramConfig(opt?: CompilerOptions, fs = getFs()): Promise<ResolvedProgramConfig> {
     patchTsSys()
 
     const bt = getBuildTargetOrThrow()
     const [parsed, pkg, previousPkg] = await Promise.all([
-        runTask('resolve', 'tsconfig', () => getTsConfig(fs, bt.workingDirectory, targetFiles), 5),
+        runTask('resolve', 'tsconfig', () => getTsConfigWithFiles(fs, bt.workingDirectory), 5),
         getFs().readFile(path.resolve(bt.workingDirectory, 'package.json'), 'utf-8').then(JSON.parse).catch(throwIfNotFileNotFoundError),
         getPreviousPkg()
     ])
@@ -429,7 +408,7 @@ export async function resolveProgramConfig(opt?: CompilerOptions, targetFiles?: 
 
     const resolvedPkg = pkg !== undefined
         ? await runTask('resolve', 'pkg', () => resolvePackage(pkg, bt.workingDirectory, parsed), 5) 
-        : createSyntheticPackage(opt, targetFiles)
+        : createSyntheticPackage(opt)
 
     // Automatically enable declaration if we expose a typescript file in `package.json`
     if (parsed.cmd.options.declaration === undefined && resolvedPkg.shouldEmitDeclarations) {
@@ -553,6 +532,7 @@ function resolveObjRelative<T extends Record<string, any>>(from: string, obj: T,
 
 const cachedConfigs = new Map<Pick<JsonFs, 'readJson'>, ResolvedTsConfig | Promise<ResolvedTsConfig | undefined>>()
 
+// Must not be async so that `cachedConfigs` is updated immediately
 function saveResolvedConfig(workingDir: string, config: ResolvedProgramConfig) {
     const resolved: ResolvedTsConfig = {
         version: ts.version,

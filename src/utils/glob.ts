@@ -1,7 +1,6 @@
 import * as path from 'node:path'
 import { Fs } from '../system'
-import { keyedMemoize } from '../utils'
-import { getLogger } from '../logging'
+import { keyedMemoize, throwIfNotFileNotFoundError } from '../utils'
 
 interface Wildcard {
     readonly type: 'wildcard'
@@ -29,7 +28,7 @@ type GlobComponent =
     | Wildcard
     | CharacterSet
 
-enum ParseState {
+const enum ParseState {
     Initial,
     Set,
 }
@@ -169,7 +168,7 @@ function matchSet(char: string, s: CharacterSet, caseInsensitive = false) {
     return false
 }
 
-function matchComponent(segment: string, pattern: Exclude<GlobComponent, Separator>[], matchHidden = false, caseInsensitive = false): boolean {
+function matchSegment(segment: string, pattern: Exclude<GlobComponent, Separator>[], matchHidden = false, caseInsensitive = false): boolean {
     if (segment[0] === '.' && !matchHidden && pattern[0].type === 'wildcard') {
         return false
     }
@@ -261,7 +260,7 @@ async function multiGlob(fs: GlobHost, dir: string, patterns: Exclude<GlobCompon
         const opt = options.get(index)
         const matchHidden = opt?.matchHidden ?? !!opt?.exclude
 
-        return matchComponent(name, pattern, matchHidden, opt?.caseInsensitive)
+        return matchSegment(name, pattern, matchHidden, opt?.caseInsensitive)
     }
 
     const literalSegments: [index: number, group: Literal[]][] = []
@@ -304,11 +303,7 @@ async function multiGlob(fs: GlobHost, dir: string, patterns: Exclude<GlobCompon
     const matchedDirectoriesAll = new Map<string, boolean>()
     const matchedDirectories = new Map<string, number[]>()
 
-    const getStats = keyedMemoize((fileName: string) => fs.stat(fileName).catch(e => {
-        if ((e as any).code !== 'ENOENT') {
-            throw e
-        }
-    }))
+    const getStats = keyedMemoize((fileName: string) => fs.stat(fileName).catch(throwIfNotFileNotFoundError))
 
     function matchFile(index: number, name: string, filePath: string) {
         const included = !options.get(index)?.exclude
@@ -478,6 +473,10 @@ async function multiGlob(fs: GlobHost, dir: string, patterns: Exclude<GlobCompon
     return res
 }
 
+// This implementation was/is intended to match `tsc`, resulting in some quirks:
+// - `*` only matches files
+// - `exclude` implicitly globstars directories
+// - `**` by itself does nothing
 export function glob(fs: GlobHost, dir: string, include: string[], exclude: string[] = []) {
     const patterns = include.map(parseGlobPattern).map(splitComponents)
     const options = new Map<number, PatternOptions>()

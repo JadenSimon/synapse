@@ -312,14 +312,31 @@ export function createIncrementalHost(opt: ts.CompilerOptions) {
     }
 
     async function _getTsCompilerHost() {
-        return ts.createCompilerHost(opt, true)
+        const host = ts.createCompilerHost(opt, true)
+        const getSourceFile = host.getSourceFile
+        const sourceFiles = new Map<string, ts.SourceFile>()
+        host.getSourceFile = (fileName, versionOrOpt, onError, shouldCreateNewFile) => {
+            if (!shouldCreateNewFile && sourceFiles.has(fileName)) {
+                return sourceFiles.get(fileName)!
+            }
+
+            const sf = getSourceFile(fileName, versionOrOpt, onError, true)
+            sf && sourceFiles.set(fileName, sf)
+
+            return sf
+        }
+
+        return host
     }
 
     const getTsCompilerHost = memoize(_getTsCompilerHost)
 
     async function getProgram(roots: string[], oldHashes?: Record<string, string>) {
-        const host = await getTsCompilerHost()
-        const cache = await getCachedGraph(oldHashes)
+        const [host, cache] = await Promise.all([
+            getTsCompilerHost(),
+            getCachedGraph(oldHashes),
+        ])
+
         const pruned = roots.filter(f => checkDidChange(f, cache))
         const program = ts.createProgram(pruned, opt, host) // This takes 99% of the time for `getProgram`
         const { graph, changed } = await getGraph(program, host, cache, roots)
@@ -375,22 +392,9 @@ export function getAllDependencies(graph: CompilationGraph, files: string[]) {
         visit(f)
     }
 
-    // Roots have to be determined by looking at the transitive dependencies
-    // of the original set of files rather than the entire graph
-    //
-    // IMPORTANT: cycles in the graph will be deleted by this method
-    // TODO: find the minimum feedback arc set
-    const roots = new Set(files)
-    for (const f of deps) {
-        const z = index[f]
-        if (z) {
-            for (const d of z) {
-                roots.delete(d)
-            }
-        }
-    }
+    // TODO: find the minimum feedback arc set?
 
-    return { roots, deps }
+    return { deps }
 }
 
 

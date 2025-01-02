@@ -86,6 +86,8 @@ export function isSelfSea() {
     return storage.getStore()?.selfBuildType === 'sea'
 }
 
+// Need a better name for this because it doesn't always 
+// point to a "real" file; it's the entrypoint JS file
 export function getSelfPath() {
     if (defaultContext?.selfPath) {
         return defaultContext?.selfPath
@@ -110,16 +112,19 @@ export function getSelfPathOrThrow() {
 export class CancelError extends Error {}
 
 // These are global for now
-const disposables: (Disposable | AsyncDisposable)[] = []
-export function pushDisposable<T extends Disposable | AsyncDisposable>(disposable: T): T {
+type DisposableLike = Disposable | AsyncDisposable | (() => Promise<void> | void)
+const disposables: DisposableLike[] = []
+export function pushDisposable<T extends DisposableLike>(disposable: T): T {
     disposables.push(disposable)
     return disposable
 }
 
 export async function dispose() {
-    const promises: PromiseLike<void>[] = []
+    const promises: (PromiseLike<void> | void)[] = []
     for (const d of disposables) {
-        if (Symbol.dispose in d) {
+        if (typeof d === 'function') {
+            promises.push(d())
+        } else if (Symbol.dispose in d) {
             d[Symbol.dispose]()
         } else {
             promises.push(d[Symbol.asyncDispose]())
@@ -131,7 +136,7 @@ export async function dispose() {
 }
 
 // This is mutable and may be set at build-time
-let semver = '0.0.1'
+let semver = '0.0.0'
 let revision: string | undefined
 export function setCurrentVersion(_semver: string, _revision?: string) {
     semver = _semver

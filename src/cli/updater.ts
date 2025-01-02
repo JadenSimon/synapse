@@ -16,8 +16,8 @@ import { rename } from '../system'
 // 2. No auto-updates by default
 //      * The CLI for `fly.io` has auto-updates and I've found it to be annoying as an occasional user
 
-export async function checkForUpdates(opt?: { force?: boolean }) {
-    const latestRelease = await github.getRelease('Cohesible', 'synapse')
+export async function checkForUpdates(opt?: { force?: boolean; tag?: string }) {
+    const latestRelease = await github.getRelease('Cohesible', 'synapse', opt?.tag)
     const latest = latestRelease.tag_name.slice(1)
     const current = getCurrentVersion().semver
     if (compareVersions(latest, current) <= 0 && !opt?.force) {
@@ -38,14 +38,18 @@ export async function checkForUpdates(opt?: { force?: boolean }) {
     }
 }
 
-export async function tryUpgrade(opt?: { force?: boolean }) {
-    const updateInfo = await checkForUpdates(opt)
-    if (!updateInfo) {
-        return printLine(colorize('green', 'Already on the latest version'))
+export async function tryUpgrade(opt?: { force?: boolean; tag?: string; hash?: string }) {
+    if (!opt?.hash) {
+        const updateInfo = await checkForUpdates(opt)
+        if (!updateInfo) {
+            return printLine(colorize('green', 'Already on the latest version'))
+        }
+    
+        // Not using `printLine` here because something else will be writing to `stdout`
+        process.stdout.write(`Found newer version ${updateInfo.version}. Upgrading...\n`)
+    } else {
+        process.stdout.write(`Installing from hash: ${opt.hash}\n`)
     }
-
-    // Not using `printLine` here because something else will be writing to `stdout`
-    process.stdout.write(`Found newer version ${updateInfo.version}. Upgrading...\n`)
 
     const installDir = process.env.SYNAPSE_INSTALL ?? path.resolve(homedir(), '.synapse')
     const execPath = path.resolve(installDir, 'app', 'bin', 'synapse.exe')
@@ -57,9 +61,11 @@ export async function tryUpgrade(opt?: { force?: boolean }) {
         await rename(execPath, oldExecPath)
     }
 
+    const searchPart = opt?.hash ? `?hash=${opt.hash}` : ''
+
     const cmd = process.platform === 'win32'
-        ? 'irm https://synap.sh/install.ps1 | iex'
-        : 'curl -fsSL https://synap.sh/install | bash'
+        ? `irm https://synap.sh/install.ps1${searchPart} | iex`
+        : `curl -fsSL https://synap.sh/install${searchPart} | bash`
 
     await new Promise<void>((resolve, reject) => {
         const proc = child_process.spawn(cmd, { 

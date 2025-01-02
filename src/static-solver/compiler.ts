@@ -1,7 +1,7 @@
 import ts, { factory, isCallExpression } from 'typescript'
 import { SourceMapHost, createVariableStatement, emitChunk, extract, failOnNode, getNodeLocation, getNullTransformationContext, isNonNullable, printNodes } from './utils'
 import { isAssignmentExpression, Symbol, Scope, createGraphOmitGlobal, getContainingScope, unwrapScope, getSubscopeDfs, getReferencesInScope, getRootSymbol, RootScope, createGraph, getSubscopeContaining, getImmediatelyCapturedSymbols, getRootAndSuccessorSymbol, printSymbol } from './scopes'
-import { createObjectLiteral, createPropertyAssignment, createSymbolPropertyName, createSyntheticComment, hashNode, memoize, removeModifiers } from '../utils'
+import { createLiteral, createObjectLiteral, createPropertyAssignment, createSymbolPropertyName, createSyntheticComment, hashNode, memoize, removeModifiers } from '../utils'
 import { SourceMapV3 } from '../runtime/sourceMaps'
 import { liftScope } from './scopes'
 import { ResourceTypeChecker } from '../compiler/resourceGraph'
@@ -91,26 +91,25 @@ function addModuleSymbolToMethod(
     serializationData: ts.Expression,
     factory = ts.factory,
 ) {
-    if (!node.name) {
-        failOnNode('Expected name', node)
-    }
+    // const className = ts.isClassLike(node.parent) ? node.parent.name : undefined
+    // if (!className) {
+    //     // This should only happen for `export default class {}`
+    //     // Until we allow methods over `const C = class {}`
+    //     failOnNode('Expected class name', node.parent)
+    //     return
+    // }
 
-    if (ts.isPrivateIdentifier(node.name)) {
-        failOnNode('Cannot serialize private methods', node.name)
-    }
+    const isStatic = node.modifiers?.find(x => x.kind === ts.SyntaxKind.StaticKeyword)
+    const className = factory.createThis()
 
-    const className = ts.isClassLike(node.parent) ? node.parent.name : undefined
-    if (!className) {
-        failOnNode('Expected class name', node.parent)
-    }
-
-    const classIdent = factory.createIdentifier(className.text)
+    const subject = isStatic ? className : factory.createPropertyAccessExpression(className, 'prototype')
     const accessExp = ts.isIdentifier(node.name) 
-        ? factory.createPropertyAccessExpression(classIdent, node.name)
+        ? factory.createPropertyAccessExpression(subject, node.name)
         : factory.createElementAccessExpression(
-            factory.createIdentifier(className.text),
+            subject,
             ts.isComputedPropertyName(node.name) ? node.name.expression : node.name
         )
+
     const access = factory.createElementAccessExpression(
         accessExp,
         createMovablePropertyName(factory)
@@ -620,7 +619,7 @@ function addDeserializeConstructor(
     const descIdent = factory.createIdentifier('desc')
     const tag = createSymbolPropertyName('deserialize', factory)
     const fields = node.members.filter(isPrivateField)
-    const privateFieldsIdent = factory.createIdentifier('__privateFields')
+    const privateFieldsIdent = factory.createIdentifier('privateFields')
     const privateFields = factory.createVariableStatement(
         undefined,
         factory.createVariableDeclarationList(
@@ -630,7 +629,7 @@ function addDeserializeConstructor(
             undefined,
             factory.createCallExpression(
                 factory.createPropertyAccessExpression(
-                    factory.createPropertyAccessExpression(descIdent, '__privateFields'),
+                    factory.createPropertyAccessExpression(descIdent, 'privateFields'),
                     'pop'
                 ),
                 undefined,
@@ -746,6 +745,181 @@ function getPrivateAccessExpressionSymbol(sym: Symbol): Symbol | undefined {
     return sym
 }
 
+function isConstantEnumDeclaration(sym: Symbol) {
+    if (!sym.declaration || !ts.isEnumDeclaration(sym.declaration)) {
+        return false
+    }
+
+    if (!sym.declaration.modifiers?.find(m => m.kind === ts.SyntaxKind.ConstKeyword)) {
+        return false
+    }
+
+    return true
+}
+
+function coerceNumber(value: any) {
+    if (typeof value === 'number') {
+        return value
+    }
+    if (typeof value === 'string') {
+        const parsed = Number(value)
+        if (!isNaN(parsed)) {
+            return parsed
+        }
+    }
+}
+
+function evaluateBinaryExpression(expression: ts.BinaryExpression,lookup?: (ident: string, node: ts.Node) => any) {
+    function evaluateNumber(exp: ts.Expression) {
+        const result = coerceNumber(evaluateExpression(exp, lookup))
+        if (result !== undefined) {
+            return result
+        }
+        failOnNode('Not a number', exp)
+    }
+
+    switch (expression.operatorToken.kind) {
+        case ts.SyntaxKind.PercentToken:
+            return evaluateNumber(expression.left) % evaluateNumber(expression.right)
+        case ts.SyntaxKind.AsteriskAsteriskToken:
+            return evaluateNumber(expression.left) ** evaluateNumber(expression.right)
+        case ts.SyntaxKind.AmpersandToken:
+            return evaluateNumber(expression.left) & evaluateNumber(expression.right)
+        case ts.SyntaxKind.BarToken:
+            return evaluateNumber(expression.left) | evaluateNumber(expression.right)
+        case ts.SyntaxKind.CaretToken:
+            return evaluateNumber(expression.left) ^ evaluateNumber(expression.right)
+        case ts.SyntaxKind.LessThanLessThanToken:
+            return evaluateNumber(expression.left) << evaluateNumber(expression.right)
+        case ts.SyntaxKind.GreaterThanGreaterThanToken:
+            return evaluateNumber(expression.left) >> evaluateNumber(expression.right)
+        case ts.SyntaxKind.GreaterThanGreaterThanGreaterThanToken:
+            return evaluateNumber(expression.left) >>> evaluateNumber(expression.right)
+        case ts.SyntaxKind.MinusToken:
+            return evaluateNumber(expression.left) - evaluateNumber(expression.right)
+        case ts.SyntaxKind.SlashToken:
+            return evaluateNumber(expression.left) / evaluateNumber(expression.right)
+        case ts.SyntaxKind.AsteriskToken:
+            return evaluateNumber(expression.left) * evaluateNumber(expression.right)
+        case ts.SyntaxKind.PlusToken:
+            // (string | number) + (string | number) is valid
+            return evaluateExpression(expression.left, lookup) + (evaluateExpression(expression.right, lookup) as any)
+    }
+
+    // TODO
+    failOnNode('Unhandled binary expression', expression)
+}
+
+function evaluatePrefixUnaryExpression(expression: ts.PrefixUnaryExpression, lookup?: (ident: string, node: ts.Node) => any) {
+    function evaluateNumber() {
+        const result = coerceNumber(evaluateExpression(expression.operand, lookup))
+        if (result !== undefined) {
+            return result
+        }
+        failOnNode('Not a number', expression.operand)
+    }
+
+    switch (expression.operator) {
+        case ts.SyntaxKind.TildeToken:
+            return ~evaluateNumber()
+        case ts.SyntaxKind.PlusToken:
+            return +evaluateNumber()
+        case ts.SyntaxKind.MinusToken:
+            return -evaluateNumber()
+    }
+
+    // TODO
+    failOnNode('Unhandled unary expression', expression)
+}
+
+// Basic impl. that doesn't handle all cases
+function evaluateExpression(expression: ts.Expression, lookup?: (ident: string, node: ts.Node) => any): any {
+    switch (expression.kind) {
+        case ts.SyntaxKind.ParenthesizedExpression:
+            return evaluateExpression((expression as ts.ParenthesizedExpression).expression)
+        case ts.SyntaxKind.NumericLiteral:
+            return Number((expression as ts.NumericLiteral).text)
+        case ts.SyntaxKind.StringLiteral:
+            return (expression as ts.StringLiteral).text
+        case ts.SyntaxKind.PrefixUnaryExpression:
+            return evaluatePrefixUnaryExpression(expression as ts.PrefixUnaryExpression, lookup)
+        case ts.SyntaxKind.BinaryExpression:
+            return evaluateBinaryExpression(expression as ts.BinaryExpression, lookup)
+        case ts.SyntaxKind.Identifier:
+            if (lookup) {
+                return lookup((expression as ts.Identifier).text, expression)
+            }
+            failOnNode('Failed to evaluate identfiier', expression)
+        case ts.SyntaxKind.PropertyAccessExpression: {
+            const target = evaluateExpression((expression as ts.PropertyAccessExpression), lookup)
+            
+            try {
+                return target[(expression as ts.PropertyAccessExpression).name.text]
+            } catch (e) {
+                failOnNode(`Bad property access: ${(e as any).message}`, expression)
+            }
+        }
+    }
+
+    // TODO
+    failOnNode('Unhandled expression', expression)
+}
+
+function getEnumMemberName(member: ts.EnumMember) {
+    switch (member.name.kind) {
+        case ts.SyntaxKind.Identifier:
+        case ts.SyntaxKind.StringLiteral:
+            return (member.name as ts.Identifier | ts.StringLiteral).text
+
+        case ts.SyntaxKind.ComputedPropertyName: {
+            const exp = ((member.name) as ts.ComputedPropertyName).expression
+            if (ts.isStringLiteralLike(exp)) {
+                return exp.text
+            }
+        }
+
+        default:
+            failOnNode('Invalid member name', member.name)
+    }
+}
+
+function getEnumInlineValue(member: ts.EnumMember): number | string {
+    const decl = member.parent
+    const initializer = member.initializer
+    if (initializer) {
+        return evaluateExpression(initializer, (ident, node) => {
+            // Identifiers can reference sibling members
+            const sibling = decl.members.find(x => getEnumMemberName(x) === ident)
+            if (sibling === member) {
+                failOnNode('Cannot use before assignment', node)
+            }
+
+            if (sibling) {
+                return getEnumInlineValue(sibling)
+            }
+
+            // TODO: need to lookup symbols in outer scopes
+            failOnNode('Not implemented', node)
+        })
+    }
+
+
+    // Find the closest member with an initializer
+    const index = decl.members.indexOf(member)
+    const closest = decl.members.slice(0, index).filter(x => x.initializer).at(-1)
+    if (!closest) {
+        return index
+    }
+
+    const indexOfClosest = decl.members.indexOf(closest)
+    const val = getEnumInlineValue(closest)
+    if (typeof val !== 'number') {
+        failOnNode('Enum must have an initializer', member)
+    }
+
+    return val + (index - indexOfClosest)
+}
+
 interface SymbolMapping {
     identifier: ts.Identifier
     bound?: boolean
@@ -767,6 +941,9 @@ function rewriteCapturedSymbols(
     depth = 0,
     factory = ts.factory
 ) {
+    const inner = scope.node
+    const isMethod = ts.isMethodDeclaration(inner)
+
     const refs = new Map<Symbol, ts.Node[]>(
         [...captured, ...globals].map(c => [c, getReferencesInScope(c, scope)]),
     )
@@ -778,6 +955,7 @@ function rewriteCapturedSymbols(
     const reduced = new Map<Symbol, ts.Node[]>()
     const boundSymbols = new Set<Symbol>()
     const defaultImports = new Set<Symbol>()
+    const replacements = new Map<ts.Node, ts.Node>()
     for (const [sym, nodes] of refs.entries()) {
         if (circularRefs.has(sym) && !sym.parent) {
             boundSymbols.add(sym)
@@ -825,7 +1003,26 @@ function rewriteCapturedSymbols(
 
             const importClause = root.importClause
             if (!importClause) {
-                reduced.set(root, getReferencesInScope(root, scope))
+                if (root !== sym && isConstantEnumDeclaration(root)) {
+                    // We can omit this capture only if there are no direct refs
+                    const refs = getReferencesInScope(root, scope)
+                    const hasDirect = refs.some(r =>  r.parent?.kind !== ts.SyntaxKind.PropertyAccessExpression)
+
+                    if (hasDirect) {
+                        reduced.set(root, refs)
+                    } else {
+                        const inlineValue = createLiteral(getEnumInlineValue(sym.declaration as ts.EnumMember))
+                        for (const n of nodes) {
+                            replacements.set(n, inlineValue)
+                        }
+                    }
+                } else {
+                    // Don't rewrite `this` immediately inside a method declaration.
+                    // We can't capture the reference to `this` directly.
+                    if (isMethod && root.name === 'this') continue
+
+                    reduced.set(root, getReferencesInScope(root, scope))
+                }
 
                 continue
             }
@@ -889,7 +1086,6 @@ function rewriteCapturedSymbols(
         })
     }
 
-    const replacements = new Map<ts.Node, ts.Node>()
     for (const [sym, nodes] of reduced) {
         const { identifier, bound } = idents.get(sym)!
         const newNode = bound 
@@ -915,8 +1111,6 @@ function rewriteCapturedSymbols(
             replacements.set(n, exp)
         }
     }
-
-    const inner = scope.node
 
     try {
         const node = runtimeTransformer?.(inner) ?? inner
@@ -1194,7 +1388,7 @@ function isClassElementModifier(modifier: ts.ModifierLike) {
 }
 
 function convertMethodToFunction(node: ts.MethodDeclaration) {
-    const name = ts.factory.createIdentifier('__fn')
+    const name = ts.factory.createIdentifier('__fn') // TODO: use the method name and sanitize keywords
     const modifiers = node.modifiers?.filter(x => !isClassElementModifier(x))
 
     return ts.factory.createFunctionDeclaration(
@@ -1754,11 +1948,27 @@ export function createSerializer(
             })
         }
 
-        function hoistMethodSerializationData(node: ts.MethodDeclaration, name: string, captured: ts.Expression[]) {
+        function addClassMethodSerialization(node: ts.MethodDeclaration, name: string, captured: ts.Expression[]) {
             const serializationData = createSerializationData(name, captured, context.factory, compiler.moduleType)
-            addStatementUpdate(ts.getOriginalNode(node).parent as ts.Statement, {
-                after: [addModuleSymbolToMethod(node, serializationData, context.factory)]
-            })
+            const instrumentation = addModuleSymbolToMethod(node, serializationData, context.factory)
+            staticStack[staticStack.length-1].push(instrumentation)
+        }
+
+        // TODO: methods in object literals
+        function addObjectMethodSerialization(node: ts.MethodDeclaration, name: string, captured: ts.Expression[]) {
+            const serializationData = createSerializationData(name, captured, context.factory, compiler.moduleType)
+            const statement = ts.findAncestor(ts.getOriginalNode(node), ts.isStatement)
+   
+            // const parent = ts.getOriginalNode(node).parent
+            // if (!ts.isClassLike(parent)) {
+            //     return
+            // }
+
+            const instrumentation = addModuleSymbolToMethod(node, serializationData, context.factory)
+            // if (instrumentation) {
+            //     addStatementUpdate(parent, { after: [instrumentation] })
+            // }
+            staticStack[staticStack.length-1].push(instrumentation)
         }
 
         function addUseServerSymbol(node: ts.FunctionDeclaration | ts.VariableDeclaration) {
@@ -1838,8 +2048,8 @@ export function createSerializer(
         // then `instanceof` won't work between "moved" instances and instantiations within the export
         //
         // Isolating every declaration is one way to solve this
-        function extractClassDeclaration(node: ts.ClassDeclaration) {
-            node = ts.getOriginalNode(node) as ts.ClassDeclaration
+        function extractClassDeclaration(node: ts.ClassDeclaration | ts.ClassExpression) {
+            node = ts.getOriginalNode(node) as ts.ClassDeclaration | ts.ClassExpression
             const name = getName(node)
 
             // XXX: visit heritage clauses first
@@ -1896,7 +2106,7 @@ export function createSerializer(
             return result
 
             function transform() {
-                if (ts.isClassDeclaration(node)) {
+                if (ts.isClassLike(node)) {
                     return visitClassDeclaration(node)
                 }
     
@@ -1908,9 +2118,9 @@ export function createSerializer(
                     return visitFunctionDeclaration(node)
                 }
 
-                // if (ts.isMethodDeclaration(node)) {
-                //     return visitMethodDeclaration(node)
-                // }
+                if (ts.isMethodDeclaration(node)) {
+                    return visitMethodDeclaration(node)
+                }
     
                 if (ts.isArrowFunction(node) || ts.isFunctionExpression(node)) {
                     return visitArrowFunctionOrExpression(node)
@@ -1933,16 +2143,23 @@ export function createSerializer(
             }
         }
 
-        function visitClassDeclaration(node: ts.ClassDeclaration) {
+        // Tracks statements meant to be added to a static class block
+        const staticStack: ts.Statement[][] = []
+        function visitClassDeclaration(node: ts.ClassDeclaration | ts.ClassExpression) {
             if (compiler.isDeclared(node)) {
                 return node
             }
 
             const r = extractClassDeclaration(node)
+
+            staticStack.push([])
+
             const name = getName(node)
             nameStack.push(name)
             const visitedClass = ts.visitEachChild(node, visit, context)
             nameStack.pop()
+
+            const staticStatements = staticStack.pop()!
 
             return addSerializerSymbolToClass(
                 visitedClass,
@@ -1953,14 +2170,41 @@ export function createSerializer(
                     compiler.moduleType,
                 ),
                 r.clauseReplacement,
+                staticStatements,
                 context,
             )
         }
 
         function visitMethodDeclaration(node: ts.MethodDeclaration) {
+            // TODO: methods in object literals
+            if (staticStack.length === 0 || !ts.isClassLike(ts.getOriginalNode(node).parent) || ts.isPrivateIdentifier(node.name)) {
+                return ts.visitEachChild(node, visit, context)
+            }
+
+            const sym = compiler.getSymbol(node)
+            if (!sym?.parentScope) {
+                return ts.visitEachChild(node, visit, context)
+            }
+
+            // We can't serialize methods with private fields directly without rewriting them
+            // So we need to bail on serializing methods that reference private fields
+            for (const d of sym.parentScope.dependencies) {
+                const [r, s] = getRootAndSuccessorSymbol(d)
+                if (r.parentScope?.symbol !== sym) {
+                    if (r.name === 'super') {
+                        return ts.visitEachChild(node, visit, context)
+                    }
+                    continue
+                }
+
+                if (s?.name[0] === '#') {
+                    return ts.visitEachChild(node, visit, context)
+                }
+            }
+
             const name = getName(node)
             const r = compiler.compileNode(name, node, context.factory, runtimeTransformer, createInfraTransformer(name, innerTransformer), undefined, jsxRuntime, undefined, depth)
-            hoistMethodSerializationData(node, getRelativeName(name), renderCapturedSymbols(r.captured, r.assets))
+            addClassMethodSerialization(node, getRelativeName(name), renderCapturedSymbols(r.captured, r.assets))
 
             nameStack.push(name)
             const res = ts.visitEachChild(node, visit, context)
@@ -2172,6 +2416,7 @@ function addSerializerSymbolToClass(
     node: ts.ClassDeclaration | ts.ClassExpression,
     serializationData: ts.Expression,
     clauseReplacement: [clause: ts.HeritageClause, ident: ts.Identifier] | undefined,
+    staticStatements: ts.Statement[],
     context: ts.TransformationContext,
 ) {
     const factory = context.factory
@@ -2186,7 +2431,7 @@ function addSerializerSymbolToClass(
         )
     ]))
 
-    const ident = factory.createIdentifier("__privateFields")
+    const ident = factory.createIdentifier("privateFields")
     const init = factory.createBinaryExpression(
         factory.createPropertyAccessExpression(
           factory.createIdentifier("desc"),
@@ -2221,7 +2466,7 @@ function addSerializerSymbolToClass(
     )
 
     const description = {
-        __privateFields: ident,
+        privateFields: ident,
     }
 
     // Private members will live on a stack
@@ -2310,12 +2555,14 @@ function addSerializerSymbolToClass(
         return c
     })
 
-    const props: ClassProps = {
-        members: [...node.members, serialize, move],
-        heritageClauses: heritageClauses,
+    const members = [...node.members, serialize, move]
+    if (staticStatements.length > 0) {
+        members.push(
+            factory.createClassStaticBlockDeclaration(factory.createBlock(staticStatements))
+        )
     }
 
-    return updateClass(node, props, factory)
+    return updateClass(node, { members, heritageClauses }, factory)
 }
 
 function getPrivateFields(node: ts.ClassDeclaration | ts.ClassExpression) {

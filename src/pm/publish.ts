@@ -3,20 +3,21 @@ import { StdioOptions } from 'node:child_process'
 import { mergeBuilds, pruneBuild, getInstallation, writeSnapshotFile, getProgramFs, getDataRepository, getModuleMappings, loadSnapshot, dumpData, getProgramFsIndex, getDeploymentFsIndex, toFsFromIndex, copyFs, createSnapshot, getOverlayedFs, Snapshot, ReadonlyBuildFs, getSnapshotPath } from '../artifacts'
 import {  NpmPackageInfo, getDefaultPackageInstaller, installFromSnapshot, testResolveDeps } from './packages'
 import { getBinDirectory, getSynapseDir, getLinkedPackagesDirectory, getToolsDirectory, getUserEnvFileName, getWorkingDir, listPackages, resolveProgramBuildTarget, SynapseConfiguration, getUserSynapseDirectory, setPackage, BuildTarget, findDeployment, getOrCreateRemotePackage } from '../workspaces'
-import { gunzip, gzip, isNonNullable, keyedMemoize, linkBin, makeExecutable, memoize, throwIfNotFileNotFoundError, tryReadJson } from '../utils'
+import { gunzip, gzip, isNonNullable, keyedMemoize, linkBin, makeExecutable, memoize, replaceWithTilde, throwIfNotFileNotFoundError, tryReadJson } from '../utils'
 import { Fs, ensureDir, readFileWithStats } from '../system'
 import { glob } from '../utils/glob'
 import { getLogger, runTask } from '../logging'
 import { homedir } from 'node:os'
 import { getBuildTargetOrThrow, getFs, getSelfPathOrThrow, isSelfSea } from '../execution'
 import { ImportMap, expandImportMap, hoistImportMap } from '../runtime/importMaps'
-import { createCommandRunner, patchPath, runCommand } from '../utils/process'
+import { createCommandRunner, patchPath, runCommand, which } from '../utils/process'
 import { PackageJson, ResolvedPackage, getCompiledPkgJson, getCurrentPkg, getImmediatePackageJsonOrThrow, getPackageJson } from './packageJson'
 import { readPathMapKey, setPathKey } from '../cli/config'
 import { getEntrypointsFile } from '../compiler/programBuilder'
 import { createPackageForRelease } from '../cli/buildInternal'
 import * as registry from '@cohesible/resources/registry'
 import { createTarball, extractTarball } from '../utils/tar'
+import { colorize } from '../cli/ui'
 
 const getDependentsFilePath = () => path.resolve(getUserSynapseDirectory(), 'packageDependents.json')
 
@@ -172,7 +173,7 @@ export async function publishToRemote(opt?: PublishToRemoteOptions) {
     }
 }
 
-export async function linkPackage(opt?: PublishOptions & { globalInstall?: boolean; skipInstall?: boolean; useNewFormat?: boolean }) {
+export async function linkPackage(opt?: PublishOptions & { globalInstall?: boolean; skipInstall?: boolean }) {
     const bt = getBuildTargetOrThrow()
 
     function getPkg() {
@@ -192,37 +193,16 @@ export async function linkPackage(opt?: PublishOptions & { globalInstall?: boole
     const fs = getFs()
     const pkgName = pkg.data.name ?? path.basename(pkg.directory)
     const resolvedDir = getLinkedPkgPath(pkgName, bt.deploymentId)
-    if (opt?.useNewFormat) {
-        return createPackageForRelease(packageDir, resolvedDir, { skipBinaryDeps: true }, true, true, true)
+
+    async function pruneDeps() {
+        const pkgData = JSON.parse(await fs.readFile(path.resolve(resolvedDir, 'package.json'), 'utf-8'))
+        delete pkgData.bin
+        delete pkgData.dependencies
+        await fs.writeFile(path.resolve(resolvedDir, 'package.json'), JSON.stringify(pkgData))
     }
 
-    const pruned = await createMergedView(bt.programId, bt.deploymentId)
-    const oldManifest = await tryReadJson<Snapshot>(fs, getSnapshotPath(resolvedDir))
-    const oldStoreHash = oldManifest?.storeHash
-
-    await runTask('copyFs', 'linkPackage', () => copyFs(pruned, resolvedDir), 100)
-    await patchSourceRoots(bt.workingDirectory, resolvedDir)
-    const { snapshot, committed } = await createSnapshot(pruned,  bt.programId, bt.deploymentId)
-    // TODO: exclusively use data blocks instead of 'both'
-    await dumpData(resolvedDir, pruned, snapshot.storeHash, 'both', oldStoreHash)
-    await writeSnapshotFile(fs, resolvedDir, snapshot)
-
-    if (!pruned.files['package.json']) {
-        await fs.writeFile(
-            path.resolve(resolvedDir, 'package.json'), 
-            await fs.readFile(path.resolve(packageDir, 'package.json'))
-        )
-    } else {
-        await fs.writeFile(
-            path.resolve(resolvedDir, 'package.json'), 
-            await getDataRepository().readData(pruned.files['package.json'].hash)
-        )
-    }
-
-    await setPackage(pkgName, bt.programId)
-
-    if (pkgName === 'synapse') {
-        for (const [k, v] of Object.entries(getPkgExecutables(pkg.data) ?? {})) {
+    async function handleSynapsePkg(snapshot: { storeHash: string; published?: Record<string, string> | undefined }) {
+        for (const [k, v] of Object.entries(getPkgExecutables(pkg!.data) ?? {})) {
             await makeExecutable(path.resolve(resolvedDir, v))
         }
     
@@ -230,30 +210,31 @@ export async function linkPackage(opt?: PublishOptions & { globalInstall?: boole
             await writeImportMap(resolvedDir, snapshot.published, snapshot.storeHash)
         }
 
-        // XXX: remove deps
-        const pkgData = JSON.parse(await fs.readFile(path.resolve(resolvedDir, 'package.json'), 'utf-8'))
-        delete pkgData.bin
-        delete pkgData.dependencies
-        await fs.writeFile(path.resolve(resolvedDir, 'package.json'), JSON.stringify(pkgData))
+        await pruneDeps()
     }
 
-    async function replaceIntegration(name: string) {
-        await setPathKey(`projectOverrides.synapse-${name}`, resolvedDir)
+    const { snapshot } = await createPackageForRelease(packageDir, resolvedDir, { skipBinaryDeps: true }, pkgName !== 'synapse', true, true)
+
+    if (pkgName === 'synapse' || pkgName.startsWith('synapse-')) {
+        await setPathKey(`projectOverrides.${pkgName}`, resolvedDir)
     }
 
-    if (pkgName.startsWith('synapse-')) {
-        await replaceIntegration(pkgName.slice('synapse-'.length))
+    await setPackage(pkgName, bt.programId)
+
+    if (pkg.data.name === 'synapse') {
+        const pruned = await createMergedView(bt.programId, bt.deploymentId)
+        await runTask('copyFs', 'linkPackage', () => copyFs(pruned, resolvedDir), 100)
+        await patchSourceRoots(bt.workingDirectory, resolvedDir)
+        await handleSynapsePkg(snapshot)
     }
 
-    // Used internally for better devex
-    // This can make things really slow if there are many dependents
-    if (!bt.environmentName) {
-        const snapshotWithStore = Object.assign(snapshot, { store: committed })
-        await publishPkgUpdates(resolvedDir, snapshotWithStore)
-        await publishPkgUpdates(packageDir, snapshotWithStore)
-    }
-
-    return resolvedDir
+    // // Used internally for better devex
+    // // This can make things really slow if there are many dependents
+    // if (!bt.environmentName) {
+    //     const snapshotWithStore = Object.assign(snapshot, { store: committed })
+    //     await publishPkgUpdates(resolvedDir, snapshotWithStore)
+    //     await publishPkgUpdates(packageDir, snapshotWithStore)
+    // }
 }
 
 export async function emitPackageDist(dest: string, bt: BuildTarget, tsOutDir?: string, declaration?: boolean) {
@@ -552,15 +533,28 @@ export async function createMergedView(programId: string, deploymentId?: string,
     const merged = mergeBuilds(builds.filter(isNonNullable))
     const infraFiles = pruneInfra ? Object.keys(merged.files).filter(x => x.endsWith('.infra.js') || x.endsWith('.infra.js.map')) : []
     const privateFiles = Object.keys(merged.files).filter(x => !!x.match(/^__([a-zA-Z_-]+)__\.json$/)) // XXX
-    const pruned = pruneBuild(merged, ['template.json', 'published.json', 'state.json', 'packages.json', ...infraFiles, ...privateFiles])
+    const pruned = pruneBuild(merged, ['template.json', 'template.bin', 'published.json', 'state.json', 'packages.json', ...infraFiles, ...privateFiles])
 
     return pruned
 }
 
+async function tryParseJson(f: string) {
+    try {
+        return JSON.parse(await getFs().readFile(f, 'utf-8'))
+    } catch (e) {
+        // Swallow
+    }
+}
+
+// This is (currently) only used for internal dev. It's not very robust.
 async function patchSourceRoots(rootDir: string, targetDir: string) {
     const sourcemaps = await glob(getFs(), targetDir, ['**/*.map'], ['node_modules'])
     for (const f of sourcemaps) {
-        const sm = JSON.parse(await getFs().readFile(f, 'utf-8'))
+        const sm = await tryParseJson(f)
+        if (!sm) {
+            continue
+        }
+
         const source = sm.sources[0]
         if (!source || source.startsWith(rootDir)) {
             continue
@@ -867,9 +861,11 @@ async function installToProfile(synapseDir: string, profileFile: string, fs = ge
     const text = await fs.readFile(profileFile, 'utf-8').catch(throwIfNotFileNotFoundError)
 
     const getInstallationLines = () => createInstallCommands(synapseDir, true)
+    const maybePrompt = () => maybePromptToSourceOrReload(synapseDir, profileFile)
 
     if (!text) {
         await fs.writeFile(profileFile, getInstallationLines().join('\n'))
+        await maybePrompt()
 
         return true
     }
@@ -878,11 +874,6 @@ async function installToProfile(synapseDir: string, profileFile: string, fs = ge
         const isLastLineEmpty = !lines.at(-1)?.trim()
         const isSecondLastLineEmpty = !lines.at(-2)?.trim()
         const installLines = getInstallationLines()
-        // if (exportedPathLocation === -1) {
-        //     lines.push(...installLines)
-        // } else {
-        //     lines.splice(exportedPathLocation, 1, '', ...installLines)
-        // }
 
         if (isLastLineEmpty && isSecondLastLineEmpty) {
             lines.pop()
@@ -893,6 +884,7 @@ async function installToProfile(synapseDir: string, profileFile: string, fs = ge
         lines.push(...installLines, '')
     
         await fs.writeFile(profileFile, lines.join('\n'))
+        await maybePrompt()
     }
 
     const lines = text.split('\n')
@@ -902,13 +894,6 @@ async function installToProfile(synapseDir: string, profileFile: string, fs = ge
         if (lines.findIndex(x => !x.startsWith('#') && x.includes(`SYNAPSE_INSTALL=${desiredInstallLocation}`)) !== -1) {
             return true
         }
-        // const lastLine = lines.findIndex((x, i) => i > oldInstall && x.includes('$SYNAPSE_INSTALL')) 
-        // if (lastLine === -1) {
-        //     // Corrupted install?
-        // } else if (shouldOverride) {
-        //     lines.splice(oldInstall, (lastLine - oldInstall) + 1, ...getInstallationLines())
-        //     await fs.writeFile(profileFile, lines.join('\n'))
-        // }
         await appendInstall(uninstallFromProfile(lines))
         return true
     }
@@ -933,6 +918,24 @@ export async function installToUserPath(target: 'sh' | 'bash' | 'zsh' = 'zsh', s
     }
 }
 
+async function maybePromptToSourceOrReload(synapseDir: string, profilePath: string) {
+    const absPath = await which('synapse').catch(e => {
+        // Swallowed
+    })
+
+    const destPath = path.resolve(synapseDir, 'bin', 'synapse')
+    if (destPath === absPath) {
+        return
+    }
+
+    // Not robust
+    const maybeQuote = (s: string) => s.includes(' ') ? `"${profilePath}"` : s
+
+    console.log(colorize('green', 'Restart your terminal or run the following to complete installation:'))
+    console.log(`    source ${maybeQuote(replaceWithTilde(profilePath))}`)
+    console.log('')
+}
+
 function findBinPathsSync(pkgDir: string, fs = getFs()) {
     const paths: string[] = []
 
@@ -953,7 +956,7 @@ function findBinPathsSync(pkgDir: string, fs = getFs()) {
     return paths
 }
 
-export function createNpmLikeCommandRunner(pkgDir: string, env?: Record<string, string>, stdio?: StdioOptions, shell?: string) {
+export function createNpmLikeCommandRunner(pkgDir: string, env?: Record<string, string | undefined>, stdio?: StdioOptions, shell?: string) {
     const paths = findBinPathsSync(pkgDir)
     env = patchPath(paths.join(':'), env)
 

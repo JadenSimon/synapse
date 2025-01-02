@@ -144,7 +144,7 @@ function getGraphemeWidth(str: string) {
     return 1
 }
 
-function getDisplayWidth(str: string) {
+export function getDisplayWidth(str: string) {
     let w = 0
     let j = 0
     let isEscaped = false
@@ -258,8 +258,8 @@ function createSyncWrapper<T extends Record<string, (...args: any[]) => any>>(ob
 }
 
 function createScreenWriter(stream = process.stdout) {
-    async function waitForDrain() {
-        await new Promise<void>((r) => stream.once('drain', r))
+    function waitForDrain() {
+        return new Promise<void>((r) => stream.once('drain', r))
     }
 
     async function runAndDrain<T = void>(fn: (cb: (val: T) => void) => boolean) {
@@ -268,7 +268,7 @@ function createScreenWriter(stream = process.stdout) {
             didDrain = fn(resolve)
         })
 
-        if (!didDrain) {
+        if (!didDrain && stream.writableNeedDrain) {
             await waitForDrain()
         }
 
@@ -406,7 +406,7 @@ interface ViewData {
     }
 }
 
-export enum ControlKey {
+export const enum ControlKey {
     Backspace = 8,
     Enter = 13,
     UpArrow,
@@ -521,25 +521,36 @@ function registerTty() {
         return { dispose: () => emitter.removeListener('signal', listener) }
     }
 
-    const previousRawMode = process.stdin.isRaw
-
+    let disposed = false
+    let previousRawMode: boolean
     function dispose() {
+        if (disposed) {
+            return
+        }
+
+        disposed = true
         emitter.emit('close')
         emitter.removeAllListeners()
-        process.stdin.removeListener('data', handleInput)
-        process.stdin.setRawMode(previousRawMode)
+
+        if (didSetup) {
+            process.stdin.setRawMode(previousRawMode)
+            process.stdin.removeListener('end', dispose)
+            process.stdin.removeListener('data', handleInput)
+            process.stdin.pause() // Remove the handler from the event loop
+        }
     }
 
     let didSetup = false
     function setup() {
-        if (didSetup) {
+        if (didSetup || disposed) {
             return
         }
 
         didSetup = true
+        previousRawMode = process.stdin.isRaw
         process.stdin.setRawMode(true)
-        process.stdin.on('end', dispose)
         process.stdin.on('data', handleInput)
+        process.stdin.once('end', dispose)
 
         onSignal(ev => {
             if (ev.signal === 'SIGINT') {
@@ -1023,8 +1034,8 @@ export function createDisplay() {
                 return
             }
 
-            clearTimeout(t)
             disposed = true
+            clearTimeout(t)
 
             return _dispose()
         }
@@ -1043,7 +1054,21 @@ export function createDisplay() {
             await writer.flush()
         }
 
-        return { 
+        async function resetScreenTop() {
+            await writer.flush()
+
+            while (screenTop < height && spans.length > 0) {
+                spans.shift()
+                screenTop += 1
+            }
+
+            writer.write('\n'.repeat(spans.length + 1))
+            spans.length = 0
+            await writer.flush()
+        }
+
+        return {
+            resetScreenTop,
             write: (text: string) => write(text, true), 
             writeLine, 
             createRow, 
@@ -1252,6 +1277,7 @@ export function createDisplay() {
             createRow: (text) => createDisplayRow(text),
             dispose: async () => {},
             clearScreen: async () => {},
+            resetScreenTop: async () => {},
             get disposed() {
                 return false
             },

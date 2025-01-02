@@ -125,7 +125,8 @@ export declare class HttpService {
 /** @internal */
 export interface ContainerInstance {
     readonly name: string
-    readonly ip: string
+    readonly publicIp?: string // v4
+    readonly privateIp: string // v4
     readonly port: number // obviously this is 1:1 w/ a running app
 }
 
@@ -153,8 +154,10 @@ export interface AcquiredLock extends AsyncDisposable {
 //# resource = true
 /** @internal */
 export declare class SimpleLock {
-    lock(id: string): Promise<AcquiredLock>
+    lock(id: string, timeout?: number): Promise<AcquiredLock>
     unlock(id: string): Promise<void>
+
+    tryLock(id: string): Promise<AcquiredLock | undefined>
 }
 
 //# resource = true

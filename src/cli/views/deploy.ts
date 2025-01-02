@@ -1,10 +1,10 @@
 import * as path from 'node:path'
-import { getLogger } from '../../logging'
+import { DeployLogEvent, getLogger } from '../../logging'
 import { ParsedPlan, getChangeType, mapResource } from '../../deploy/deployment'
 import { DeployEvent, DeploySummaryEvent, FailedDeployEvent } from '../../logging'
 import { SymbolNode, SymbolGraph, renderSymbol, MergedGraph, renderSymbolLocation } from '../../refactoring'
-import { Color, colorize, format, getDisplay, getSpinnerFrame, printLine, Spinner, spinners, stripAnsi, print, ControlKey } from '../ui'
-import { keyedMemoize } from '../../utils'
+import { Color, colorize, format, getDisplay, getSpinnerFrame, printLine, Spinner, spinners, stripAnsi, print, ControlKey, getDisplayWidth } from '../ui'
+import { keyedMemoize, sortRecord } from '../../utils'
 import { getWorkingDir } from '../../workspaces'
 import { resourceIdSymbol } from '../../deploy/server'
 import { CancelError } from '../../execution'
@@ -57,9 +57,8 @@ function getStatusIcon(status: SymbolState['status'], spinner: Spinner, duration
 }
 
 function isOnlyUpdatingDefs(state: SymbolState) {
-    for (const k of Object.keys(state.resources)) {
-         // XXX
-        if (!k.endsWith('--definition')) {
+    for (const v of Object.values(state.resources)) {
+        if (v.resourceType.closureKindHint !== 'definition') {
             return false
         }
     }
@@ -67,12 +66,12 @@ function isOnlyUpdatingDefs(state: SymbolState) {
     return true
 }
 
-export function printSymbolTable(symbols: Iterable<[sym: SymbolNode, state: SymbolState]>, showLocation = true, maxWidth = 80) {
+export function printSymbolTable(symbols: Iterable<[sym: SymbolNode, state: SymbolState]>) {
     const texts = new Map<SymbolNode, string>()
     for (const [k, v] of symbols) {
         if (isOnlyUpdatingDefs(v)) continue
 
-        const text = renderSymbolWithState(k.value, v, undefined, spinners.empty)
+        const text = renderSymbolWithState(k.value, v, spinners.empty)
         texts.set(k, text)
     }
 
@@ -80,7 +79,6 @@ export function printSymbolTable(symbols: Iterable<[sym: SymbolNode, state: Symb
         return
     }
 
-    // const headerSize = Math.min(process.stdout.columns, maxWidth)
     const largestWidth = [...texts.values()].map(stripAnsi).sort((a, b) => b.length - a.length)[0]
     const minGap = 2
     const padding = largestWidth.length + minGap
@@ -89,7 +87,7 @@ export function printSymbolTable(symbols: Iterable<[sym: SymbolNode, state: Symb
         if (isOnlyUpdatingDefs(v)) continue
 
         const relPath = path.relative(getWorkingDir(), k.value.fileName)
-        const left = renderSymbolWithState(k.value, v, undefined, spinners.empty)
+        const left = renderSymbolWithState(k.value, v, spinners.empty)
         const right = renderSymbolLocation({ ...k.value, fileName: relPath }, true)
         const leftWidth = stripAnsi(left).length
         //const padding = headerSize - leftWidth
@@ -133,15 +131,13 @@ export function renderMove(
     return `${fromRendered} --> ${toRendered}`
 }
 
-export function renderSymbolWithState(
+function renderSymbolWithState(
     sym: SymbolNode['value'],
     state: SymbolState,
-    workingDir = getWorkingDir(), 
     spinner = spinners.braille
 ) {
     const actionColor = getColor(state.action)
     const icon = getIcon(state.action)
-   // const status = state.status !== 'pending' ? ` (${state.status})` : ''
     const duration = state.startTime ? Date.now() - state.startTime.getTime() : undefined
     const seconds = duration ? Math.floor(duration / 1000) : 0
     const durationText = !seconds ? '' : ` (${seconds}s)`
@@ -160,10 +156,6 @@ export function renderSymbolWithState(
     const symWithIcon = colorize(actionColor, `${icon} ${parts.name}`)
 
     return `${status} ${symWithIcon}${details}`
-}
-
-interface DeploySummary {
-        
 }
 
 export async function createDeployView(graph: MergedGraph, mode: 'deploy' | 'destroy' | 'import' = 'deploy') {
@@ -285,11 +277,7 @@ export async function createDeployView(graph: MergedGraph, mode: 'deploy' | 'des
 
             const r = getRow(`${symbol.value.id}`)
             const t = +setInterval(() => {
-                const s = renderSymbolWithState(
-                    symbol.value,
-                    state,
-                    getWorkingDir(),
-                )
+                const s = renderSymbolWithState(symbol.value, state)
 
                 r.update(s)
             }, 250)
@@ -310,11 +298,7 @@ export async function createDeployView(graph: MergedGraph, mode: 'deploy' | 'des
             const state = res.state
             addRenderInterval(res.symbol, res.state)
 
-            const s = renderSymbolWithState(
-                res.symbol.value,
-                state,
-                getWorkingDir(),
-            )
+            const s = renderSymbolWithState(res.symbol.value, state)
 
             if (state.resources[ev.resource].status === 'complete') {
                 if (!state.resources[ev.resource].internal) {
@@ -364,10 +348,9 @@ export async function createDeployView(graph: MergedGraph, mode: 'deploy' | 'des
         })
     })
 
-    const resourceLogs: Record<string, string[]> = {}
+    const resourceLogs: DeployLogEvent[] = []
     getLogger().onDeployLog(ev => {
-        const arr = resourceLogs[ev.resource] ??= []
-        arr.push(require('node:util').format(...ev.args))
+        resourceLogs.push(ev)
     })
 
     function dispose(headerText?: string) {
@@ -379,16 +362,22 @@ export async function createDeployView(graph: MergedGraph, mode: 'deploy' | 'des
             clearInterval(v)
         }
 
+        function getDisplayName(resourceKey: string) {
+            const sym = graph.hasSymbol(resourceKey) ? graph.getSymbol(resourceKey) : undefined
+            
+            return sym ? renderSym(sym.value, true, true) : resourceKey
+        }
+
         if (errors.length > 0) {
             view.writeLine()
             view.writeLine('Errors:')
 
-            // TODO: convert resource names to symbols
             for (const [r, e] of errors) {
+                const name = getDisplayName(r)
                 if (typeof e === 'string') {
-                    view.writeLine(`[${r}]: ${e}`)
+                    view.writeLine(`[${name}]: ${e}`)
                 } else {
-                    printLine(`[${r}]: ${format(e)}`)
+                    printLine(`[${name}]: ${format(e)}`)
                 }
             }
         }
@@ -397,15 +386,32 @@ export async function createDeployView(graph: MergedGraph, mode: 'deploy' | 'des
             getLogger().log(`Skipped:`, skipped)
         }
 
-        const l = Object.entries(resourceLogs)
-        if (l.length > 0) {
+        // FIXME: we should organize into 3 columns (<name> <type> <location>) and pad between each
+        // Padding exclusively on the left works but it's not great. The output will look terrible
+        // with a large variety of filenames and/or resource types.
+        if (resourceLogs.length > 0) {
             view.writeLine()
             view.writeLine('Resource logs:')
-            // TODO: convert resource names to symbols
-            for (const [k, v] of l) {
-                for (const z of v) {
-                    view.writeLine(`[${k}]: ${z}`)
-                }
+
+            // Ensures finding the padding width is fast
+            const resourceDisplayNames = new Map<string, { text: string; width: number }>()
+            for (const ev of resourceLogs) {
+                if (resourceDisplayNames.has(ev.resource)) continue
+
+                const text = getDisplayName(ev.resource)
+                resourceDisplayNames.set(ev.resource, { text, width: getDisplayWidth(text) })
+            }
+
+            let paddingWidth = 0
+            for (const v of resourceDisplayNames.values()) {
+                paddingWidth = Math.max(v.width, paddingWidth)
+            }
+
+            for (const ev of resourceLogs) {
+                const name = resourceDisplayNames.get(ev.resource)!
+                const padding = paddingWidth - resourceDisplayNames.get(ev.resource)!.width
+                const paddedName = ' '.repeat(padding) + name.text
+                view.writeLine(`[ ${paddedName} ]: ${format(...ev.args)}`)
             }
         }
     }
@@ -459,14 +465,20 @@ function summarizePlan(plan: ParsedPlan): DeployEvent['action'] | 'no-op' {
     return action
 }
 
-export function groupSymbolInfoByFile(info: Map<SymbolNode, SymbolState>): Record<string, [SymbolNode, SymbolState][]> {
-    const groups: Record<string, [SymbolNode, SymbolState][]> = {}
+type ByFile = Record<string, [SymbolNode, SymbolState][]>
+
+export function groupSymbolInfoByPkg(info: Map<SymbolNode, SymbolState>): Record<string, ByFile> {
+    const byPkg: Record<string, ByFile> = {}
     for (const [k, v] of info) {
-        const g = groups[k.value.fileName] ??= []
+        const pkg = k.value.packageRef ?? k.value.specifier ?? '' // `''` is the root
+        const files = byPkg[pkg] ??= {}
+        const g = files[k.value.fileName] ??= []
         g.push([k, v])
     }
 
-    return groups
+    // Sort with the root first
+
+    return sortRecord(byPkg)
 }
 
 export function getPlannedChanges(plan: ParsedPlan) {
@@ -603,24 +615,30 @@ export function renderSummary(ev: DeploySummaryEvent) {
     return lines.join('\n')
 }
 
-export async function promptDestroyConfirmation(reason: string, state: TfState) {
+export async function promptForInput(prompt: string) {
     const display = getDisplay()
     const tty = display.writer.tty
     if (!tty) {
         throw new Error('Cannot prompt for confirmation without a tty')
     }
 
-    const warning = `${reason} Are you sure you want to destroy this deployment?`
-    printLine(colorize('brightYellow', warning))
-    print(`(y/N): `)
-    // TODO: show what will be deleted
+    print(prompt)
 
     await new Promise<void>(r => setTimeout(r, 100))
     await display.writer.flush()
 
+    // Used for internal test fixtures
+    const inputFromTests = process.env['__SYNAPSE_TEST_INPUT']
+    if (inputFromTests !== undefined) {
+        printLine(inputFromTests)
+        await display.getOverlayedView().resetScreenTop()
+
+        return inputFromTests
+    }
+
     display.writer.showCursor()
 
-    const resp = await new Promise<string>((resolve, reject) => {
+    return new Promise<string>((resolve, reject) => {
         let buf = ''
         const l = tty.onKeyPress(ev => {
             switch (ev.key) {
@@ -654,12 +672,18 @@ export async function promptDestroyConfirmation(reason: string, state: TfState) 
                     break
             }
         })
-    })
+    }).finally(() => display.getOverlayedView().resetScreenTop())
+}
+
+export async function promptDestroyConfirmation(reason: string, state: TfState) {
+    const warning = `${reason} Are you sure you want to destroy this deployment?`
+    printLine(colorize('brightYellow', warning))
+
+    const resp = await promptForInput(`(y/N): `)
+    // TODO: show what will be deleted
 
     const trimmed = resp.trim().toLowerCase()
     if (!trimmed || trimmed.startsWith('n') || (trimmed !== 'y' && trimmed !== 'yes')) {
         throw new CancelError('Cancelled destroy')
     }
-
-    await display.getOverlayedView().clearScreen()
 }

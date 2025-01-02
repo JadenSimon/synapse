@@ -1,12 +1,13 @@
 import * as synapse from '..'
 import * as path from 'node:path'
+import * as os from 'node:os'
 import { getObjectByPrefix } from '../build-fs/utils'
 import { eagerlyStartDaemon, emitCommandEvent } from '../services/analytics'
-import { getCiType, levenshteinDistance, memoize, toSnakeCase } from '../utils'
+import { getCiType, levenshteinDistance, memoize, Mutable, toSnakeCase } from '../utils'
 import { getWorkingDir, resolveProgramBuildTarget } from '../workspaces'
 import { readKey, setKey } from './config'
-import { RenderableError, colorize, printJson, printLine, stripAnsi } from './ui'
-import { runWithContext, getBuildTargetOrThrow } from '../execution'
+import { RenderableError, bold, colorize, dim, getDisplayWidth, printJson, printLine, stripAnsi } from './ui'
+import { runWithContext, getBuildTargetOrThrow, getCurrentVersion } from '../execution'
 import { handleCompletion } from './completions/completion'
 import { runInternalTestFile } from '../testing/internal'
 import { getAuth } from '../auth'
@@ -14,6 +15,7 @@ import { tryUpgrade } from './updater'
 import { getLogger, runTask } from '../logging'
 import { passthroughZig, downloadNodeLib } from '../zig/compile'
 import { internalBundle } from './buildInternal'
+import { installVsCodeZigExtension } from '../zig/installer'
 
 
 interface TypeMap {
@@ -110,6 +112,19 @@ const passthroughSwitch: PassthroughSwitch = {
     passthrough: true,
 }
 
+// TODO: allows for <cmd>-<arg> e.g. `run-main.ts`
+const dynamicArg: SwitchArgument = {
+    name: 'dynamicArg',
+    type: 'string',
+    hidden: true,
+}
+
+const helpFlag: SwitchArgument = {
+    name: 'help',
+    type: 'boolean',
+    hidden: true,
+}
+
 export interface RegisteredCommand<T extends any[] = any[]> {
     readonly name: string
     readonly fn: (...args: T) => Promise<void> | void
@@ -140,7 +155,7 @@ export interface CommandDescriptor<
     // `hidden` = include in public build but hide in UI
     readonly hidden?: boolean 
     readonly internal?: boolean
-    readonly category?: string
+    readonly category?: string | string[]
     readonly examples?: string[]
     readonly aliases?: string[]
 
@@ -186,6 +201,10 @@ export function registerCommand(name: string, fn: (...args: any[]) => Promise<vo
         }
     }
 
+    // Inject common options
+    const options = (descriptor as Mutable<typeof descriptor>).options ??= []
+    options.push(helpFlag)
+
     validateDescriptor(descriptor)
     registeredCommands.set(name, { name, fn, descriptor })
 }
@@ -201,7 +220,30 @@ function unpackArgs<T extends any[], U>(args: [...T, U]): [T, U] {
     return [args.slice(0, -1) as any, args.at(-1) as any]
 }
 
+// The order affects sorting
+const categories = ['setup', 'development', 'operations', 'debugging', 'refactoring', 'automation', 'tools']
+
+function groupByCategory(commands: Iterable<RegisteredCommand>) {
+    const byCategory = new Map<string, RegisteredCommand[]>()
+    for (const v of commands) {        
+        const c = v.descriptor.category
+        const primary = Array.isArray(c) ? c[0] : c
+        if (!primary) continue
+
+        if (!byCategory.has(primary)) {
+            byCategory.set(primary, [])
+        }
+
+        byCategory.get(primary)!.push(v)
+    }
+
+    return new Map(
+        [...byCategory].sort((a, b) => categories.indexOf(a[0]) - categories.indexOf(b[0]))
+    )
+}
+
 interface ShowCommandsOptions {
+    categorize?: boolean
     includeInternal?: boolean
     importantOnly?: boolean
     indent?: number
@@ -209,6 +251,7 @@ interface ShowCommandsOptions {
 
 function showCommands(opt: ShowCommandsOptions = {}) {
     const {
+        categorize = false,
         importantOnly = true,
         includeInternal = false, 
         indent = 4,
@@ -221,10 +264,32 @@ function showCommands(opt: ShowCommandsOptions = {}) {
         if (desc.internal && !includeInternal) {
             return false
         }
+        if (categorize && (!desc.category || (Array.isArray(desc.category) && desc.category.length === 0))) {
+            return false
+        }
         return !desc.hidden
     }
 
     const filtered = [...registeredCommands].filter(([k, v]) => filter(v.descriptor))
+
+    if (categorize) {
+        const byCategory = groupByCategory(filtered.map(x => x[1]))
+        const paddingWidth = filtered.map(x => x[1].name).reduce((a, b) => Math.max(a, b.length), 0)
+
+        for (const [k, v] of byCategory) {
+            printLine((bold(colorize('blue', k))))
+
+            for (const d of v) {
+                const name = colorize('cyan', d.name.padEnd(paddingWidth, ' '))
+                const desc = d.descriptor.description ? `${d.descriptor.description}` : ''
+                printLine(`    ${name}  ${desc}`)
+            }
+
+            printLine()
+        }
+
+        return
+    }
 
     const parts: [string, string][] = []
     for (const [k, v] of filtered) {
@@ -247,10 +312,13 @@ function showCommands(opt: ShowCommandsOptions = {}) {
 }
 
 export function showUsage() {
-    printLine('Usage: synapse <command> [...options] [...arguments]')
+    printLine('Usage: synapse <command> [...arguments] [...options]')
     printLine()
-    printLine('Commands:')
+    printLine('Important Commands:')
     showCommands()
+    printLine()
+    printLine(`Getting started guide:`)
+    printLine(`    https://github.com/Cohesible/synapse/blob/main/docs/getting-started.md`)
 }
 
 // Really adhoc. I know there's way better ways to do fuzzy matching
@@ -375,7 +443,10 @@ const objectHashArg = {
 const deployTargetOption = { 
     name: 'target' as const,
     shortName: 't',
-    type: createEnumType(...supportedIntegrations), 
+    type: createUnionType(
+        createEnumType(...supportedIntegrations),
+        'string',
+    ), 
     description: 'The default deployment target to use when synthesizing standard resources' 
 } satisfies SwitchArgument
 
@@ -387,7 +458,7 @@ const compileOptions = [
     ...buildTargetOptions,
     deployTargetOption,
     { name: 'no-incremental', type: 'boolean', description: 'Disables incremental compilation' },
-    { name: 'no-synth', type: 'boolean', description: 'Synthesis inputs are emitted instead of executed', hidden: true }, // TODO: better description
+    { name: 'no-synth', type: 'boolean', description: 'Synthesis inputs are emitted instead of executed', hidden: true },
     { name: 'no-infra', type: 'boolean', description: 'Disables generation of synthesis inputs', hidden: true },
     { name: 'skip-install', type: 'boolean' },
     { name: 'host-target', type: hostTargetType, hidden: true },
@@ -416,6 +487,7 @@ registerTypedCommand(
     'compile',
     {
         args: [varargsFiles],
+        category: ['development'],
         options: [
             ...compileOptions, 
             { name: 'log-symEval', type: 'boolean', hidden: true },
@@ -423,7 +495,7 @@ registerTypedCommand(
         ],
         requirements: { program: true },
         inferBuildTarget: true,
-        description: 'Converts program source code into deployable artifacts'
+        description: 'Converts program source code into deployable artifacts.'
     },
     async (...args) => {
         const [files, opt] = unpackArgs(args)
@@ -447,6 +519,7 @@ registerTypedCommand(
     'watch',
     {
         internal: true,
+        category: ['development'],
         options: [{ name: 'auto-deploy', type: 'boolean' }],
     },
     async (...args) => {
@@ -473,16 +546,18 @@ registerTypedCommand(
     'deploy',
     {
         isImportantCommand: true,
-        args: [varargsFiles],
+        category: ['operations'],
+        args: [varargsFiles], // FIXME: this should accept symbol paths, filenames are a special case
         options: [
             { name: 'rollback-if-failed', type: 'boolean', hidden: true }, 
-            { name: 'plan-depth', type: 'number', hidden: true }, 
+            { name: 'plan-depth', type: 'number', hidden: true },
+            { name: 'expect-no-changes', type: 'boolean', hidden: true }, // For tests
             { name: 'debug', type: 'boolean', hidden: true },
             ...deployOptions, 
         ],
         requirements: { program: true, process: true },
         inferBuildTarget: true,
-        description: 'Creates or updates a deployment'
+        description: 'Create or update a deployment.'
     },
     async (...args) => {
         const [files, opt] = unpackArgs(args)
@@ -498,6 +573,7 @@ registerTypedCommand(
                 forceRefresh: opt['refresh'],
                 planDepth: opt['plan-depth'],
                 debug: opt['debug'],
+                expectNoChanges: opt['expect-no-changes'],
             })
         }
 
@@ -512,6 +588,13 @@ registerTypedCommand(
     }
 )
 
+// FIXME: this currently behaves more like `sync`
+// Conflicts are generally "very bad" and are usually analagous to "overwrite this file?"
+// So we only really need `sync` and maybe `push`. 
+// `sync` - reconcile state (either push, pull, or fail/prompt for conflicts)
+// `push` - directly set state
+//
+// Can states be merged? Yes. But it's something that can either be done automatically or fails.
 registerTypedCommand(
     'pull',
     {
@@ -537,6 +620,7 @@ registerTypedCommand(
     'destroy',
     {
         isImportantCommand: true,
+        category: ['operations'],
         args: [varargsFiles],
         options: [
             ...deployOptions, 
@@ -547,7 +631,7 @@ registerTypedCommand(
         ],
         requirements: { program: true, process: true },
         inferBuildTarget: true,
-        description: 'Deletes resources in a deployment'
+        description: 'Tears down resources in a deployment.'
     },
     async (...args) => {
         const [files, opt] = unpackArgs(args)
@@ -567,7 +651,8 @@ registerTypedCommand(
 registerTypedCommand(
     'rollback',
     {
-        internal: true,
+        category: ['operations'],
+        description: 'Reverts the most recent deploy action.',
         options: [
             ...buildTargetOptions, 
             { name: 'sync-after', type: 'boolean', hidden: true },
@@ -584,6 +669,7 @@ registerTypedCommand(
     'test',
     {
         isImportantCommand: true,
+        category: ['development', 'automation'],
         args: [varargsFiles],
         options: [
             ...buildTargetOptions, 
@@ -595,11 +681,12 @@ registerTypedCommand(
             { name: 'rollback-if-failed', type: 'boolean', hidden: true },
             { name: 'filter', type: 'string', hidden: true },
             { name: 'no-cache', type: 'boolean', description: 'Runs tests without caching results or using cached results' },
-            { name: 'show-logs', type: 'boolean', description: 'Shows all test logs regardless of the outcome' },
+            // TODO: need all flags to also have a `no` variant, right now this option does nothing. At all.
+            { name: 'show-logs', type: 'boolean', description: 'Shows all test logs regardless of the outcome', defaultValue: true },
         ],
         requirements: { program: true, process: true },
         inferBuildTarget: true,
-        description: 'Deploys and runs test resources'
+        description: 'Deploy and run test resources.'
     },
     async (...args) => {
         const [files, opt] = unpackArgs(args)
@@ -629,7 +716,7 @@ registerTypedCommand(
 registerTypedCommand(
     'show-object', 
     {
-        internal: true,
+        hidden: true,
         args: [objectHashArg],
         options: [
             { name: 'captured', type: 'boolean' },
@@ -642,14 +729,14 @@ registerTypedCommand(
 registerTypedCommand(
     'publish',  
     {
+        category: ['development'],
         hidden: true,
         options: [
-            { name: 'local', type: 'boolean' },
+            { name: 'local', type: 'boolean', description: 'Writes to the local Synapse package repository. This is scoped per-project, use `spr:#<pkg-name>` as the version string in consumer packages.' },
             { name: 'remote', type: 'boolean', hidden: true },
             { name: 'dry-run', type: 'boolean', hidden: true },
             { name: 'skip-install', type: 'boolean', hidden: true },
             { name: 'archive', type: 'string', hidden: true },
-            { name: 'new-format', type: 'boolean', hidden: true },
             { name: 'overwrite', type: 'boolean', hidden: true },
             { name: 'visibility', type: createEnumType('public', 'private'), hidden: true },
             { name: 'ref', type: 'string', hidden: true },
@@ -662,7 +749,6 @@ registerTypedCommand(
             dryRun: opt['dry-run'],
             skipInstall: opt['skip-install'],
             archive: opt['archive'],
-            newFormat: opt['new-format'],
             environmentName: opt['environment'],
             overwrite: opt['overwrite'],
             visibility: opt['visibility'],
@@ -673,7 +759,7 @@ registerTypedCommand(
 registerTypedCommand(
     'gc',  
     {
-        internal: true,
+        hidden: true,
         options: [
             { name: 'dry-run', type: 'boolean' }
         ],
@@ -706,7 +792,8 @@ registerTypedCommand(
 registerTypedCommand(
     'show',  
     {
-        internal: true, // Temporary
+        category: ['debugging', 'operations'],
+        hidden: true,
         args: [{ name: 'symbols', type: 'string', allowMultiple: true }],
         options: [
             ...buildTargetOptions,
@@ -727,19 +814,46 @@ registerTypedCommand(
     'help',  
     {
         isImportantCommand: true,
-        args: [],
-        description: 'Shows additional information',
+        args: [{ name: 'command', type: 'string', description: 'Name of a command to show help for', optional: true }],
+        description: 'Shows additional usage information.',
         options: [{ name: 'all', type: 'boolean', description: 'Shows everything', hidden: true }],
     },
     async (...args) => {
-        printLine(`The built-in \`help\` command isn't done yet.`)
-        printLine(`So here's a link instead: https://github.com/Cohesible/synapse/blob/main/docs/getting-started.md`)
+        const [commands, opt] = unpackArgs(args)
+
+        if (commands[0]) {
+            const targetCmd = getCommand(commands[0])
+            if (!targetCmd) {
+                throw new Error(`No such command exists: ${commands[0]}`)
+            }
+
+            return showHelp(targetCmd.name, targetCmd.descriptor)
+        }
+
+        printLine('Usage: synapse <command> [...arguments] [...options]')
+        printLine('Use synapse help <command> for a detailed description')
+        printLine()
+        printLine('Commands by Category:')
+        printLine()
+        showCommands({ categorize: true, importantOnly: false })
     }
 )
 
 registerTypedCommand(
-    'migrate',  
+    'clone',
     {
+        internal: true,
+        category: 'setup',
+        description: 'Clones an existing project'
+    },
+    () => {}
+)
+
+registerTypedCommand(
+    'detect-refactors',  
+    {
+        hidden: true,
+        category: ['refactoring'],
         description: 'Finds resources that may have been renamed and moves them for the next deployment.',
         args: [varargsFiles],
         options: [
@@ -747,6 +861,7 @@ registerTypedCommand(
             { name: 'outfile', type: 'string' },
             ...buildTargetOptions
         ],
+        aliases: ['migrate'], // Legacy
     },
     async (...args) => {
         const [files, opt] = unpackArgs(args)
@@ -755,11 +870,11 @@ registerTypedCommand(
     }
 )
 
-
 registerTypedCommand(
     'status',  
     {
-        description: 'Shows the build state for the current program, including any files that need to be re-compiled or re-deployed.',
+        category: ['development'],
+        description: 'Shows the build state for the current program, including any stale files.',
         options: [{ name: 'verbose', shortName: 'v', type: 'boolean' }]
     },
     opt => synapse.showStatus(opt)
@@ -769,13 +884,23 @@ registerTypedCommand(
     'run',  
     {
         isImportantCommand: true,
+        category: ['development', 'automation'],
         args: [{ name: 'target', type: createUnionType(typescriptFileType, 'string'), optional: true }],
-        options: [passthroughSwitch, { name: 'skipValidation', type: 'boolean', hidden: true }, { name: 'skipCompile', type: 'boolean', hidden: true }, ...buildTargetOptions],
+        options: [
+            // dynamicArg,
+            passthroughSwitch, 
+            { name: 'skipValidation', type: 'boolean', hidden: true }, 
+            { name: 'skipCompile', type: 'boolean', hidden: true }, 
+            { name: 'runDir', type: 'string', hidden: true }, 
+
+            { name: 'no-deploy', type: 'boolean', description: 'Skips any prompts to deploy the program' },
+            ...buildTargetOptions
+        ],
         inferBuildTarget: true,
-        description: 'Executes a target file/script. Uses an executable in the current application by default.',
+        description: 'Execute a file or script.',
     },
     async (target, opt) => {
-        await synapse.run(target, opt.targetArgs ?? [], opt)
+        await synapse.run(target, opt.targetArgs ?? [], { ...opt, noDeploy: opt['no-deploy'] })
     }
 )
 
@@ -820,6 +945,7 @@ registerTypedCommand(
     'add',  
     {
         hidden: true,
+        category: 'development',
         args: [{ name: 'packages', type: 'string', allowMultiple: true, min: 1 }],
         options: [
             { name: 'dev', shortName: 'd', type: 'boolean' }, 
@@ -835,7 +961,8 @@ registerTypedCommand(
 registerTypedCommand(
     'remove',  
     {
-        internal: true,
+        hidden: true,
+        category: 'development',
         args: [{ name: 'packages', type: 'string', allowMultiple: true, min: 1 }],
         options: []
     },
@@ -861,7 +988,7 @@ registerTypedCommand(
 registerTypedCommand(
     'dump-fs',  
     {
-        internal: true,
+        hidden: true,
         args: [{ name: 'fs', optional: true, type: createUnionType(createEnumType('program', 'deployment', 'package', 'test'), objectHashType) }],
         options: [...buildTargetOptions, { name: 'block', type: 'boolean', hidden: true }, { name: 'debug', type: 'boolean', hidden: true, defaultValue: true }]
     },
@@ -874,7 +1001,15 @@ registerTypedCommand(
     'emit',  
     {
         args: [],
-        options: [...buildTargetOptions, { name: 'outDir', type: 'string' }, { name: 'block', type: 'boolean', hidden: true }, { name: 'debug', type: 'boolean', hidden: true }, { name: 'no-optimize', type: 'boolean', hidden: true }]
+        category: 'automation',
+        description: 'Writes out the current build artifacts to disk.',
+        options: [
+            ...buildTargetOptions, 
+            { name: 'out-dir', type: 'string', aliases: ['outDir'], description: 'Where to write artifacts. By default, uses `outDir` from `tsconfig.json`, otherwise `./out`' }, 
+            { name: 'block', type: 'boolean', hidden: true }, 
+            { name: 'debug', type: 'boolean', hidden: true }, 
+            { name: 'no-optimize', type: 'boolean', hidden: true }
+        ]
     },
     async (opt) => {
         await synapse.emitBfs('package', { ...opt, isEmit: true })
@@ -923,7 +1058,15 @@ registerTypedCommand(
 registerTypedCommand(
     'upgrade',  
     {
-        options: [{ name: 'force', type: 'boolean' }],
+        description: 'Installs the latest CLI version.',
+        category: 'tools',
+        options: [
+            { name: 'force', type: 'boolean', description: 'Forcibly installs the CLI over the existing version' },
+            // TODO: add implications to provider better generated docs.
+            // I think `--tag` should imply `--force` 
+            { name: 'tag', type: 'string', description: 'Download the build associated with a git tag' },
+            { name: 'hash', type: 'string', hidden: true, description: 'Artifact hash. Does not check compat.' },
+        ],
         requirements: { program: false }
     },
     async (...args) => {
@@ -936,9 +1079,15 @@ registerTypedCommand(
     'clean',  
     {
         args: [],
+        description: 'Deletes internal caches for the current program.',
+        category: 'tools',
         options: [
             { name: 'packages', type: 'boolean', description: 'Clears the packages cache' },
-            { name: 'tests', type: 'boolean', description: 'Cleans the tests cache' }
+            { name: 'tests', type: 'boolean', description: 'Clears the tests cache' },
+            { name: 'program', type: 'boolean', hidden: true },
+
+            // TODO: expose this with proper UI surrounding the hazards
+            { name: 'deployment', type: 'boolean', hidden: true }
         ],
         requirements: { program: true },
     },
@@ -946,7 +1095,8 @@ registerTypedCommand(
 )
 
 registerTypedCommand(
-    'install',  
+    // Rename to `install-packages` ???
+    'install',
     {
         hidden: true,
         args: [],
@@ -979,21 +1129,32 @@ registerTypedCommand(
 registerTypedCommand(
     'build',
     {
+        category: 'automation',
         description: 'Builds all executables in the current program.',
         args: [{ name: 'target', type: typescriptFileType, allowMultiple: true }],
         options: [
             { name: 'lazy-load', type: 'string', allowMultiple: true }, 
             { name: 'no-sea', type: 'boolean' },
-            { name: 'synapse-path', type: 'string' }
+            { name: 'minify', type: 'boolean' },
+            { name: 'synapse-path', type: 'string' },
+            { name: 'optimize', hidden: true, type: 'boolean' },
+
+            // Cross-compilation (currently broken due to v8 heap snapshots and/or code caches not being portable)
+            { name: 'os', type: createEnumType('windows', 'linux', 'darwin'), hidden: true },
+            { name: 'arch', type: createEnumType('x64', 'aarch64'), hidden: true },
         ],
     },
     (...args) => {
         const [files, opt] = unpackArgs(args)
         
         return synapse.buildExecutables(files, {
+            os: opt['os'],
+            arch: opt['arch'],
             sea: !opt['no-sea'],
+            minify: opt['minify'],
             lazyLoad: opt['lazy-load'],
             synapsePath: opt['synapse-path'],
+            useOptimizer: opt['optimize'],
         })
     },
 )
@@ -1029,8 +1190,10 @@ registerTypedCommand(
 registerTypedCommand(
     'repl',  
     {
-        description: 'Enters an interactive REPL session, optionally using a target file. The target file\'s exports are placed in the global scope.',
-        args: [{ name: 'targetFile', type: typescriptFileType, optional: true }],
+        category: ['debugging', 'operations'],
+        description: 'Enters an interactive REPL session, optionally using a target file.',
+        // The target file\'s exports are placed in the global scope.
+        args: [{ name: 'file', type: typescriptFileType, optional: true }],
         options: buildTargetOptions,
     },
     (a, opt) => synapse.replCommand(a, opt),
@@ -1051,7 +1214,7 @@ registerTypedCommand(
 registerTypedCommand(
     'load-block',  
     {
-        internal: true,
+        hidden: true,
         args: [{ name: 'path', type: 'string' }, { name: 'destination', type: 'string', optional: true }],
         options: buildTargetOptions,
     },
@@ -1063,7 +1226,7 @@ registerTypedCommand(
 registerTypedCommand(
     'dump-state',  
     {
-        internal: true,
+        hidden: true,
         args: [{ name: 'path', type: 'string', optional: true }],
         options: buildTargetOptions,
     },
@@ -1075,7 +1238,7 @@ registerTypedCommand(
 registerTypedCommand(
     'load-state',  
     {
-        internal: true,
+        hidden: true,
         args: [{ name: 'path', type: 'string' }],
         options: buildTargetOptions,
     },
@@ -1092,6 +1255,7 @@ const internalBundleOptions = [
     { name: 'stagingDir', type: 'string' },
     { name: 'downloadOnly', type: 'boolean' },
     { name: 'preserveSource', type: 'boolean' },
+    { name: 'integrationsOnly', type: 'boolean' },
     { name: 'libc', type: 'string' },
     { name: 'integration', type: 'string', allowMultiple: true },
     { name: 'seaPrep', type: 'boolean' },
@@ -1153,14 +1317,22 @@ registerTypedCommand(
 
 registerTypedCommand(
     'load-moved', 
-    { internal: true, args: [{ name: 'moves', type: 'string' }] },
-    (filename) => synapse.loadMoved(filename),
+    { 
+        hidden: true, 
+        args: [{ name: 'moves', type: 'string' }],
+    },
+    async (filename) => {
+        await synapse.loadMoved(filename, false)
+    },
 )
 
 registerTypedCommand(
     'list-deployments', 
-    { internal: true },
-    (...args) => synapse.listDeployments(),
+    { 
+        hidden: true,
+        options: [{ name: 'all', type: 'boolean' }],
+    },
+    (opt) => synapse.listDeployments(undefined, opt),
 )
 
 registerTypedCommand(
@@ -1179,11 +1351,22 @@ registerTypedCommand(
 )
 
 registerTypedCommand(
+    'fs-stats',  
+    {
+        hidden: true,
+        args: [],
+        options: [{ name: 'all', type: 'boolean' }]
+    },
+    (opt) => synapse.printFsStats(opt)
+)
+
+registerTypedCommand(
     'query-logs',  
     {
-        args: [{ name: 'ref', type: 'string', allowMultiple: true }],
+        category: 'debugging',
+        args: [{ name: 'symbol-path', type: 'string', allowMultiple: true }],
         options: [{ name: 'system', type: 'boolean', description: 'Shows system log messages' }],
-        description: 'Grabs logs from resources. Names can be provided to filter logs to those resources.'
+        description: 'Fetches logs from resources. Use names to filter.'
     },
     (...args) => {
         const [refs, opt] = unpackArgs(args)
@@ -1193,19 +1376,10 @@ registerTypedCommand(
 )
 
 registerTypedCommand(
-    'commands',  
-    {
-        internal: true,
-        options: [{ name: 'internal', type: 'boolean' }]
-    },
-    (opt) => showCommands({ includeInternal: opt.internal })
-)
-
-registerTypedCommand(
     'quote',  
     {
-        isImportantCommand: true,
-        description: 'Prints a motivational quote queried from a public Synapse application',
+        category: 'tools',
+        description: 'Prints a motivational quote queried from a public Synapse application.',
     },
     () => synapse.quote()
 )
@@ -1236,8 +1410,6 @@ registerTypedCommand(
     (opt) => handleCompletion(opt.targetArgs ?? [], getAllCommands()),
 )
 
-registerCommand('test-find-local', () => synapse.findLocalResources([]), { internal: true })
-
 registerTypedCommand(
     'deploy-modules',
     {
@@ -1253,7 +1425,7 @@ registerTypedCommand(
 registerTypedCommand(
     'taint', 
     {
-        internal: true,
+        hidden: true,
         args: [{ name: 'resourceId', type: 'string' }],
     }, 
     (a, opt) => synapse.taint(a, opt)
@@ -1262,7 +1434,7 @@ registerTypedCommand(
 registerTypedCommand(
     'delete-resource', 
     {
-        internal: true,
+        hidden: true,
         args: [{ name: 'resourceId', type: 'string' }],
         options: [{ name: 'force', type: 'boolean' }, ...buildTargetOptions]
     }, 
@@ -1272,19 +1444,24 @@ registerTypedCommand(
 registerTypedCommand(
     'list-commits',  
     {
-        internal: true,
+        hidden: true,
         requirements: { process: true },
-        options: [{ name: 'useProgram', type: 'boolean' }]
+        options: [{ name: 'program', type: 'boolean' }]
     },
-    async (opt) => await synapse.listCommitsCmd('', opt),
+    async (opt) => await synapse.listCommitsCmd('', { useProgram: opt['program'] }),
 )
 
+// TODO: if we want to be fancy (and a bit risky), we can make this command _very_ prominent if the user
+// is obviously not in a program/project. For example, it should show first in any commands lists
+// and it should be the only recommended command to use. And we would reject commands like `deploy`
+// if there's obviously nothing there. But anyway, more logic = more ways to break. This improvement 
+// would be great for adoption but should be thrown out soon after.
 registerTypedCommand(
     'init',  
     {
-        // Only important for new users
-        // isImportantCommand: true,
-        description: 'Creates a new package in the current directory',
+        category: 'setup',
+        isImportantCommand: true,
+        description: 'Initializes a new program in the current directory.',
         options: [
             { name: 'template', type: 'string' }
         ]
@@ -1305,6 +1482,7 @@ registerTypedCommand(
     'import-resource',
     {
         hidden: true,
+        category: ['development', 'operations'],
         args: [
             { name: 'resource', type: 'string' }, 
             { name: 'id', type: 'string' }
@@ -1320,16 +1498,68 @@ registerTypedCommand(
 registerTypedCommand(
     'move-resource',
     {
-        hidden: true,
         args: [
-            { name: 'from', type: 'string' }, 
+            { name: 'from', type: 'string' }, // These should be symbol paths
             { name: 'to', type: 'string' }
+        ],
+        description: 'Refactor resources by mapping their current state to code.',
+        helpDescription: 'Refactor resources by mapping their current state (<from>) to updated code definitions (<to>) for the next deploy.',
+        category: ['refactoring', 'operations'],
+        examples: [
+            'bucket bucket2 # Move resources under bucket to bucket2',
+            'hello.ts#bucket main.ts#bucket2 # Move bucket in hello.ts to bucket2 in main.ts',
         ],
     },
     (...args) => {
         const [[from, to], opt] = unpackArgs(args)
 
         return synapse.moveResource(from, to)
+    }
+)
+
+function gatherInfo() {
+    const version = getCurrentVersion()
+
+    return {
+        version: version.semver,
+        revision: version.revision,
+        host: `${process.platform}-${process.arch}-${os.endianness()}`,
+        'os-version': os.release(),
+    }
+}
+
+function printInfo() {
+    for (const [k, v] of Object.entries(gatherInfo())) {
+        if (v === undefined) continue
+        printLine(`* ${k}: ${v}`)
+    }
+}
+
+registerTypedCommand('print-info', { hidden: true }, printInfo)
+
+registerTypedCommand(
+    'report-bug',
+    {
+        description: 'Report a bug with Synapse.',
+        category: 'tools', // Or `feedback`?
+        args: [],
+    },
+    (...args) => {
+        // ?body=<url encoded>
+        // Use URL shortener e.g. `synap.sh/bug-report/<short-id>`
+        // API would just be `POST synap.sh/bug-report` w/ relevant body
+        // Just need to guard against spam
+        const issueUrl = 'https://github.com/Cohesible/synapse/issues/new?labels=bug&template=bug_report.md'
+
+        printLine()
+        printLine(colorize('brightBlue', 'Open this link to create a new issue:'))
+        printLine(`    ${issueUrl}`)
+        printLine()
+
+        printLine(colorize('brightBlue', 'Then paste the following under "System Info":'))
+        printLine()
+        printInfo()
+        printLine()
     }
 )
 
@@ -1344,6 +1574,15 @@ registerTypedCommand(
 
         return passthroughZig(opt.targetArgs ?? [])
     }
+)
+
+registerTypedCommand(
+    'install-vscode-zig-extension',
+    { 
+        hidden: true,
+        requirements: { program: false },
+    },
+    () => installVsCodeZigExtension()
 )
 
 export function isEnumType(type: ArgType): type is EnumType {
@@ -1411,8 +1650,123 @@ async function parseArg(val: string, type: ArgType) {
     return val
 }
 
-function showHelp(desc: CommandDescriptor) {
-    // If command has passthrough switch we need to treat it differently
+// Design/style inspired by `git` man pages
+function showHelp(name: string, desc: CommandDescriptor) {
+    function renderArg(arg: PositionalArgument) {
+        let res = `<${arg.name}>`
+        if (arg.allowMultiple) {
+            res = `${res}...`
+        }
+        if (arg.optional || (arg.allowMultiple && (arg.minCount ?? 0) === 0)) {
+            res = `[${res}]` // Would a `?` be better?
+        }
+        return res
+    }
+
+    function renderType(t: any, skipParens = false): string {
+        switch (t) {
+            case 'boolean': return ''
+            case 'number': return '<number>'
+            case 'string': return '<string>'
+        }
+
+        if (isEnumType(t)) {
+            const s = `${[...t[enumTypeSym]].join('|')}`
+
+            return skipParens ? s : `(${s})`
+        }
+
+        if (isUnionType(t)) {
+            const types = [...t[unionTypeSym]]
+            const s = `${types.map(t => renderType(t, true)).join('|')}`
+
+            return skipParens ? s : `(${s})`
+        }
+
+        if (isFileType(t)) {
+            const extnames = [...t[fileTypeSym]]
+
+            return `<${extnames.join(',')} file>`
+        }
+
+        if (typeof t === 'function') {
+            return `<${t._name ?? t.name}>` // FIXME: compiler should not minify functions where `.name` could be accessed
+        }
+
+        return '<any>'
+    }
+
+    function renderOption(opt: SwitchArgument) {
+        const type = renderType(opt.type)
+        const parts: string[] = []
+        const names: string[] = []
+        if (opt.shortName) {
+            names.push(`-${opt.shortName}`)
+        }
+
+        names.push(`--${opt.name}`)
+        parts.push(names.join(', '))
+
+        if (type) {
+            parts.push(type)
+        }
+
+        return `${parts.join(' ')}`
+    }
+
+    const publicOptions = desc.options?.filter(x => !x.hidden && !x.passthrough) ?? []
+
+    function renderAllArgs() {
+        const args = (desc.args ?? []).map(renderArg)
+        
+        // Better to lump them together past a certain point
+        if (publicOptions.length > 3) {
+            args.push('[...options]')
+        } else {
+            // TODO: show allow mutliple
+            args.push(...publicOptions.map(x => `[${renderOption(x)}]`))
+        }
+
+        return args.join(' ')
+    }
+
+    function printWrappedText(indent: string, text: string) {
+        // FIXME: doesn't handle wrapping
+        const width = getDisplayWidth(text)
+        const maxWidth = process.stdout.columns - indent.length
+        const lines = Math.ceil(width / maxWidth)
+        for (let i = 0; i < lines; i++) {
+            printLine(`${indent}${text.slice(i * maxWidth, (i + 1) * maxWidth)}`)
+        }
+    }
+
+    const indent = '    '
+    printLine(bold('SYNOPSIS'))
+    printLine(`${indent}${inferCmdName()} ${name} ${renderAllArgs()}`)
+
+    const helpDesc = desc.helpDescription ?? desc.description
+    if (helpDesc) {
+        printLine()
+        printLine(bold('DESCRIPTION'))
+        printWrappedText(indent, helpDesc)
+    }
+
+    // TODO: dynamic examples would be _amazing_
+
+    if (publicOptions.length > 0) {
+        printLine()
+        printLine(bold('OPTIONS'))
+    
+        for (const opt of publicOptions) {
+            printLine(`${indent}${renderOption(opt)}`)
+
+            if (opt.description) {
+                printWrappedText(indent.repeat(2), opt.description)
+            }
+
+            printLine()
+        }
+    }
 }
 
 function validateDescriptor(desc: CommandDescriptor) {
@@ -1567,7 +1921,7 @@ async function parseArgs(args: string[], desc: CommandDescriptor) {
 
     const argCountWithOptional = desc.args?.filter(x => !x.allowMultiple).length ?? 0
 
-    // Fill with default/`undefined`
+    // Fill with default / `undefined`
     while (parsedArgs.length < argCountWithOptional) {
         const arg = desc.args?.[parsedArgs.length]
         const defaultValue = arg?.defaultValue
@@ -1581,11 +1935,19 @@ async function parseArgs(args: string[], desc: CommandDescriptor) {
     return { args: parsedArgs, options }
 }
 
+function getEnvironmentName(params: string[]) {
+    const environmentIndex = params.indexOf('--environment')
+    if (environmentIndex !== -1) {
+        return params[environmentIndex+1]
+    }
+
+    return process.env.SYNAPSE_ENV || undefined
+}
+
 async function getBuildTarget(cmd: CommandDescriptor, params: string[]) {
     const start = performance.now()
     const cwd = process.cwd()
-    const environmentIndex = params.indexOf('--environment')
-    const environmentName = (environmentIndex !== -1 ? params[environmentIndex+1] : undefined) ?? process.env.SYNAPSE_ENV
+    const environmentName = getEnvironmentName(params)
     const res = await resolveProgramBuildTarget(cwd, { environmentName })
     if (!res && cmd.inferBuildTarget) {
         const programFiles = params.filter(x => x.match(/\.tsx?$/))
@@ -1614,18 +1976,25 @@ function getCommand(cmd: string) {
     return registeredCommands.get(name)
 }
 
-
 export async function executeCommand(cmd: string, params: string[]) {
     const command = getCommand(cmd)
     if (!command) {
         throw new RenderableError(`Invalid command: ${cmd}`, () => didYouMean(cmd))
     }
 
-    if (command.descriptor.requirements?.program === false) {
+    async function parseAndRun(command: RegisteredCommand) {
         const parsed = await runTask('parse', cmd, () => parseArgs(params, command.descriptor), 1)
+        if (parsed.options.help) {
+            return showHelp(command.name, command.descriptor)
+        }
+
         const args = [...parsed.args, parsed.options]
 
         return runTask('run', cmd, () => command.fn(...args), 1)
+    }
+
+    if (command.descriptor.requirements?.program === false) {
+        return parseAndRun(command)
     }
 
     const buildTarget = await getBuildTarget(command.descriptor, params)
@@ -1640,11 +2009,7 @@ export async function executeCommand(cmd: string, params: string[]) {
         getLogger().debug(`Using resolved build target`, buildTarget)
     }
 
-    await runWithContext({ buildTarget }, async () => {
-        const parsed = await runTask('parse', cmd, () => parseArgs(params, command.descriptor), 1)
-        const args = [...parsed.args, parsed.options]
-        await runTask('run', cmd, () => command.fn(...args), 1)
-    })
+    await runWithContext({ buildTarget }, () => parseAndRun(command))
 }
 
 function _inferCmdName() {

@@ -3,8 +3,8 @@
 import * as synapse from '..'
 import * as path from 'node:path'
 import * as inspector from 'node:inspector'
-import { getLogger } from '../logging'
-import { LogLevel, logToFile, logToStderr, purgeOldLogs, validateLogLevel } from './logger'
+import { getLogger, LogLevel } from '../logging'
+import { logToFile, logToStderr, purgeOldLogs, validateLogLevel } from './logger'
 import { CancelError, dispose, getCurrentVersion, runWithContext, setContext, setCurrentVersion } from '../execution'
 import { RenderableError, colorize, getDisplay, printLine } from './ui'
 import { showUsage, executeCommand, runWithAnalytics, removeInternalCommands } from './commands'
@@ -19,10 +19,11 @@ async function _main(argv: string[]) {
     }
 
     const [cmd, ...params] = argv
+    synapse.pushPlatformDisposables()
 
     await runWithAnalytics(cmd, async () => {
         await executeCommand(cmd, params)
-    }).finally(() => synapse.shutdown())
+    })
 }
 
 function isProbablyRelativePath(arg: string) {
@@ -65,7 +66,7 @@ function isMaybeCodeFile(arg: string) {
 function getLogLevel(): LogLevel | 'off' | undefined {
     const envVar = process.env['SYNAPSE_LOG']
     if (!envVar) {
-        return
+        return isProdBuild ? 'off' : undefined
     }
 
     if (envVar === 'off') {
@@ -201,7 +202,7 @@ export function main(...args: string[]) {
         loop()
     }
 
-    async function createProfiler(): Promise<AsyncDisposable> {
+    async function createProfiler() {
         const session = new inspector.Session()
         session.connect()
 
@@ -210,7 +211,8 @@ export function main(...args: string[]) {
         })
 
         await new Promise<void>((resolve, reject) => {
-            session.post('Profiler.setSamplingInterval', { interval: 100 }, err => err ? reject(err) : resolve())
+            const interval = Number(process.env.CPU_PROF_INTERVAL || 100)
+            session.post('Profiler.setSamplingInterval', { interval }, err => err ? reject(err) : resolve())
         })
 
         await new Promise<void>((resolve, reject) => {
@@ -230,7 +232,7 @@ export function main(...args: string[]) {
             })
         }
 
-        return { [Symbol.asyncDispose]: dispose }
+        return { dispose }
     }
 
     function getProfiler() {
@@ -241,11 +243,17 @@ export function main(...args: string[]) {
         return createProfiler()
     }
 
-    async function runWithLogger() {
-        purgeOldLogs().catch(e => console.error('Failed to purge logs', e))
+    // Don't show the same errors during disposal
+    let handledError: any
 
+    async function runWithLogger() {
         const isCi = !!getCiType()
         const logLevel = getLogLevel()
+
+        if (logLevel !== 'off') {
+            purgeOldLogs().catch(e => console.error('Failed to purge logs', e))
+        }
+
         const disposable = logLevel !== 'off' 
             ? isCi ? logToStderr(getLogger(), logLevel) : logToFile(getLogger(), logLevel) 
             : undefined
@@ -266,10 +274,13 @@ export function main(...args: string[]) {
             }
         }
 
+        const profiler = await getProfiler()
+
         try {
-            await using profiler = await getProfiler()
             await _main(args)
         } catch (e) {
+            handledError = e
+
             if (e instanceof CancelError) {
                 didThrow = true
                 return
@@ -291,6 +302,8 @@ export function main(...args: string[]) {
             await dispose()
             await disposable?.dispose() // No more log events will be emitted
 
+            await profiler?.dispose()
+
             setTimeout(() => {
                 process.stderr.write(`Forcibly shutting down\n`)
                 if (process.env['SYNAPSE_DEBUG'] || process.env['CI']) {
@@ -302,12 +315,13 @@ export function main(...args: string[]) {
                 }
             }, 5000).unref()
 
+            process.stdin.unref?.()
+            process.stdout.unref?.()
+            process.stderr.unref?.()
+
             if (process.stdout.isTTY) {
                 tryGracefulExit(didThrow ? 1 : undefined)
             } else {
-                process.stdin.unref?.()
-                process.stdout.unref?.()
-                process.stderr.unref?.()    
                 process.exitCode = process.exitCode || (didThrow ? 1 : 0)
             }
         }
@@ -337,30 +351,17 @@ export function main(...args: string[]) {
     }
 
     return runWithContext({ abortSignal: ac.signal, selfPath, selfBuildType }, runWithLogger).catch(e => {
-        process.stderr.write((e as any).message + '\n')
+        // We only get here if disposal fails as well
+        if (handledError !== e) {
+            process.stderr.write((e as any).message + '\n')
+        }
         process.exit(100)
-    })
-}
-
-function seaMain() {
-    const v8 = require('node:v8') as typeof import('node:v8')
-    if (!v8.startupSnapshot.isBuildingSnapshot()) {
-        throw new Error(`BUILDING_SEA was set but we're not building a snapshot`)
-    }
-
-    v8.startupSnapshot.setDeserializeMainFunction(() => {
-        const args = process.argv.slice(2)
-
-        return main(...args)
     })
 }
 
 if (isSea) {
     if (isProdBuild) {
         removeInternalCommands()
-    }
-    if (!process.env.SKIP_SEA_MAIN) {
-        seaMain()
     }
 } else {
     main(...process.argv.slice(2))

@@ -282,14 +282,13 @@ function createTerraformLogger(
             case 'diagnostic': {
                 const diags = entry.diagnostic ? [entry.diagnostic] : entry.diagnostics!
                 for (const diag of diags) {
-                    if (onDiagnostic) {
+                    if (onDiagnostic && diag.severity === 'error') {
                         if (!handledDiags.has(diag.summary)) {
                             const err = takeError ? maybeExtractError(takeError, diag.summary) : undefined
                             onDiagnostic(err ?? diag)
                         }
                     } else {
                         logger.debug('Diagnostics:', diag.summary)
-                        // logger.debug('Diagnostics (highlight):', getHighlightFromDiagnostic(diag), diag.range?.start, diag.range?.end)
     
                         if (diag.detail) {
                             logger.debug('Diagnostics (detail):', diag.detail)
@@ -319,47 +318,6 @@ function createTerraformLogger(
     }
 }
 
-async function listProviders(dir: string) {
-    const result: { source: string, name: string, version: string }[] = []
-
-    try {
-        for (const f of await fs.readdir(dir, { withFileTypes: true })) {
-            if (f.isDirectory() || f.isSymbolicLink()) {
-                const source = f.name
-                const sourcePath = path.resolve(dir, source)
-                const organizations = await fs.readdir(sourcePath, { withFileTypes: true })
-                for (const o of organizations) {
-                    if (!f.isDirectory() && !f.isSymbolicLink()) continue
-
-                    const orgName = o.name
-                    const orgPath = path.resolve(sourcePath, orgName)
-                    const providers = await fs.readdir(orgPath, { withFileTypes: true })
-                    for (const p of providers) {
-                        if (!f.isDirectory() && !f.isSymbolicLink()) continue
-
-                        const name = `${orgName}/${p.name}`
-                        const providerPath = path.resolve(orgPath, p.name)
-                        const versions = await fs.readdir(providerPath, { withFileTypes: true })
-                        for (const v of versions) {
-                            result.push({ source, name, version: v.name })
-
-                            // you can go 1 more layer deep to find the os/arch
-                        }
-                    }
-                }
-            }
-        }
-    } catch (e) {
-        if ((e as any).code !== 'ENOENT') {
-            throw e
-        }
-
-        return
-    }
-
-    return result
-}
-
 async function lockFileExists(dir: string) {
     try {
         await fs.readFile(path.resolve(dir, '.terraform.lock.hcl'))
@@ -372,25 +330,12 @@ async function lockFileExists(dir: string) {
     }
 }
 
-interface ResourceAddress {
-    readonly type: string
-    readonly name: string
-}
-
-interface FindMovesResult {
-    readonly score: number
-    readonly moves: { from: ResourceAddress; to: ResourceAddress }[]
-}
-
 export type TerraformSession = Awaited<ReturnType<typeof startTerraformSession>>
 
 interface DeployResult {
     readonly error?: Error
     readonly state: TfState
 }
-
-// [{"subject":"data.synapse_resource.bar","{"type":"property","value":"foo"}]}],"type":"result"}
-//expressions":[{"type":"property","value":"output"},
 
 type TfExp = { type: 'property', value: string } | { type: 'element', value: number }
 export interface TfRef {
@@ -420,7 +365,7 @@ export interface SessionContext extends DeploymentContext {
 
 class TfError extends Error {
     public constructor(summary: string, public readonly detail?: string, public readonly range?: TfDiagnostic['range']) {
-        super(summary)
+        super(detail ? `${summary}: ${detail}` : summary)
 
         // if (range) {
         //     getSnippet(this).then(m => process.stderr.write(`${m}\n`))
@@ -564,6 +509,11 @@ export async function startTerraformSession(
                     logger(msg)
                     if (msg.type === 'plan') {
                         stateEmitter.emit('plan', msg.data)
+                    } else if (msg.type === 'change_summary' && stateEmitter.listenerCount('plan')) {
+                        const total = msg.changes.add + msg.changes.remove + msg.changes.change + msg.changes.import
+                        if (total === 0) {
+                            stateEmitter.emit('plan', {})
+                        }
                     }
                 }
             } catch (e) {
@@ -692,14 +642,6 @@ export async function startTerraformSession(
 
             return result
         },
-        findMoves: async (oldTemplate: string) => {
-            isReady = false
-            const result = waitForResult<FindMovesResult>()
-            await write(`${['find-moves', oldTemplate].join(' ')}\n`)
-            await waitForReady()
-
-            return result
-        },
         importResource: async (target: string, id: string) => {
             isReady = false
             await write(`${['import', target, id].join(' ')}\n`)
@@ -790,30 +732,6 @@ export interface TfStateResource {
     readonly provider: string
     readonly values: Record<string, any>
 }
-
-// export async function handleErrorState(platform: Platform, opt?: DeployOptions) {
-//     const templateService = platform.getTemplateService()
-//     const templateFile = await templateService.getTemplateFilePath()
-//     const errorFilename = path.resolve(path.dirname(templateFile), 'errored.tfstate')
-
-//     try {
-//         await Promise.all([
-//             fs.access(errorFilename, fs.constants.R_OK),
-//             fs.access(path.dirname(errorFilename), fs.constants.R_OK | fs.constants.W_OK | fs.constants.X_OK),
-//         ])
-
-//         getLogger().log('Restoring error state:', errorFilename)
-//         await runTerraformCommand(platform, 'state', ['push', path.basename(errorFilename)], opt)
-
-//         getLogger().log('Error state restored! Deleting the file.')
-//         await fs.unlink(errorFilename)
-//     } catch (e) {
-//         if ((e as any).code !== 'ENOENT') {
-//             throw e
-//         }
-//     }
-// }
-
 
 // TODO: after successful destroy, delete these files
 // .terraform/terraform.tfstate
@@ -1058,9 +976,11 @@ interface TfPlan {
 
 interface TfResourceChange {
     readonly actions: ('no-op' | 'create' | 'read' | 'update' | 'delete')[]
-    readonly before: any
-    readonly after: any
-    readonly after_unknown: TfResourceChange['after'] // But with booleans
+
+    // These are only provided when requesting a "full" plan
+    readonly before?: any
+    readonly after?: any
+    readonly after_unknown?: TfResourceChange['after'] // But with booleans
     readonly replace_paths?: string[][]
 }
 
@@ -1190,6 +1110,10 @@ export function isTriggeredReplaced(plan: ResourcePlan) {
 }
 
 export function getDiff(change: TfResourceChange): any {
+    if (change.before === undefined && change.after === undefined) {
+        return
+    }
+
     return diff(change.before, mergeUnknowns(change.after ?? {}, change.after_unknown))
 }
 

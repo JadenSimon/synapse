@@ -7,7 +7,7 @@ import { createTarball, extractFileFromZip, extractTarball, hasBsdTar, listFiles
 import { PackageJson, getPackageJson } from '../pm/packageJson'
 import { downloadSource } from '../build/sources'
 import { buildGoProgram } from '../build/go'
-import { donwloadSynapsePackages, installModules } from '../pm/packages'
+import { downloadSynapsePackages, installModules } from '../pm/packages'
 import { createMergedView, createSynapseTarball, publishToRemote } from '../pm/publish'
 import { Snapshot, consolidateBuild, createSnapshot, dumpData, getDataRepository, getDeploymentFs, getModuleMappings, getProgramFs, getSnapshotPath, linkFs, pruneBuild, writeSnapshotFile } from '../artifacts'
 import { QualifiedBuildTarget, resolveBuildTarget } from '../build/builder'
@@ -22,7 +22,6 @@ import { bundleExecutable, bundlePkg } from '../closures'
 import { buildWindowsShim } from '../zig/compile'
 import { makeSea, resolveAssets } from '../build/sea'
 import { logToStderr } from './logger'
-
 
 const integrations = {
     'synapse-aws': 'integrations/aws',
@@ -48,7 +47,7 @@ export async function downloadIntegrations(dest: string, included?: string[]) {
     const include = included ? new Set(included) : undefined
     const deps = Object.keys(integrations).filter(k => !include || include.has(k))
 
-    await donwloadSynapsePackages(packagesDir, deps)
+    await downloadSynapsePackages(packagesDir, deps)
 }
 
 const baseUrl = 'https://nodejs.org/download/release'
@@ -570,10 +569,10 @@ export async function createPackageForRelease(
             JSON.stringify(copiedData, undefined, 4),
         )
     
-        return { pruned, mapping }
+        return { pruned, mapping, snapshot }
     }
 
-    return { pruned }
+    return { pruned, snapshot }
 
     // TODO: write hash list
 }
@@ -635,6 +634,9 @@ function pruneSnapshot(snapshot: Snapshot, filesToKeep: string[], keepExportedTy
     }
     if (snapshot.pointers) {
         pruneObject(snapshot.pointers, s)
+    }
+    if (snapshot.modules) {
+        pruneObject(snapshot.modules, s)
     }
 
     // Delete sourcemaps on types
@@ -943,29 +945,22 @@ export async function internalBundle(target?: string, opt: any = {}) {
     const seaDest = execPath('synapse')
 
     async function bundleMain() {
-        const bundleOpt = {
-            external, 
-            minify: isProdBuild, 
-            lazyLoad: (isSea || opt.seaPrep) ? ['@cohesible/*', 'typescript', 'esbuild', ...lazyNodeModules] : [],
-            extraBuiltins: ['typescript', 'esbuild'],
-        }
+        const bt = getBuildTargetOrThrow()
 
-        if (isProdBuild && process.env.SKIP_SEA_MAIN) {
-            const bt = getBuildTargetOrThrow()
-            return bundleExecutable(
-                bt,
-                'dist/src/cli/index.js',
-                bundledCliPath,
-                bt.workingDirectory,
-                { sea: true, ...bundleOpt }
-            )
-        }
-
-        return bundlePkg(
+        return bundleExecutable(
+            bt,
             'dist/src/cli/index.js',
-            getWorkingDir(), // TODO: we should bundle in an empty directory to prevent extraneous files from being used
             bundledCliPath,
-            bundleOpt,
+            bt.workingDirectory,
+            { 
+                ...resolved,
+                os: resolved.os as any,
+                sea: true, 
+                external, 
+                minify: isProdBuild, 
+                lazyLoad: (isSea || opt.seaPrep) ? ['@cohesible/*', 'typescript', 'esbuild', ...lazyNodeModules] : [],
+                extraBuiltins: ['typescript', 'esbuild'],
+            }
         )
     }
 
@@ -1043,7 +1038,11 @@ export async function internalBundle(target?: string, opt: any = {}) {
     }
 
     if (isSea) {
-        await makeSea(bundledCliPath, nodePath, seaDest, bundle.assets, !shouldSign)
+        await makeSea(bundledCliPath, nodePath, seaDest, {
+            assets: bundle.assets, 
+            sign: !shouldSign,
+        })
+
         if (isProdBuild || opt.stagingDir || !!getCiType()) {
             if (!opt.preserveSource) {
                 await getFs().deleteFile(bundledCliPath)
@@ -1117,13 +1116,18 @@ export async function main(...args: string[]) {
 
     logToStderr(getLogger())
 
+    const integration = parseOption('integration')
+
     return runWithContext(
         { buildTarget },
         () => internalBundle(target, {
             sea: parseFlag('sea'),
+            seaPrep: parseFlag('seaPrep'),
             downloadOnly: parseFlag('downloadOnly'),
             pipelined: parseOption('pipelined'),
             visibility: parseOption('visibility'),
+            production: parseFlag('production'),
+            integration: integration ? [integration] : undefined,
         }),
     )
 }

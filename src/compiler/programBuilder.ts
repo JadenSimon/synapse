@@ -1,7 +1,7 @@
 import ts from 'typescript'
 import * as path from 'node:path'
 import type { TfJson } from 'synapse:terraform'
-import { CompilerHost, CompilerOptions, readSources, synth } from './host'
+import { CompilerHost, CompilerOptions, synth } from './host'
 import { JsonFs } from '../system'
 import { createTransformer, getModuleBindingId, getTransformDirective } from './transformer'
 import { SourceMapHost, getNullTransformationContext } from '../static-solver/utils'
@@ -12,9 +12,9 @@ import { getLogger, runTask } from '../logging'
 import { createGraphCompiler, getModuleType } from '../static-solver'
 import { ResourceTypeChecker, createResourceGraph } from './resourceGraph'
 import { getWorkingDir } from '../workspaces'
-import { getArtifactFs, getProgramFs } from '../artifacts'
+import { getArtifactFs, getProgramFs, readSources } from '../artifacts'
 import { getBuildTargetOrThrow } from '../execution'
-import { compileAllZig, getZigCompilationGraph } from '../zig/compile'
+import { compileAllZig, getZigCompilationGraph, preprocessZigModules } from '../zig/compile'
 import { hasMainFunction } from './entrypoints'
 import { isWindows, makeRelative, resolveRelative } from '../utils'
 
@@ -119,10 +119,12 @@ export function createProgramBuilder(
             .filter(x => !x.isDeclarationFile && !program.isSourceFileFromExternalLibrary(x))
             .map(x => normalizeFileName(x.fileName))
 
-        const allSourceFiles = new Set(config.tsc.files.filter(x => !!x.match(/\.tsx?$/)).map(normalizeFileName))
-        
+        const tsFiles = config.tsc.files.filter(x => !!x.match(/\.tsx?$/)).map(normalizeFileName)
+        const allSourceFiles = new Set(tsFiles)
+        const allNonDeclarationFiles = new Set(tsFiles.filter(x => !isDeclarationFile(x)))
+
         // ZIG COMPILATION
-        const zigGraph = await runTask('zig', 'graph', () => getZigCompilationGraph([...allSourceFiles], workingDir), 1)
+        const zigGraph = await runTask('zig', 'graph', () => preprocessZigModules([...allNonDeclarationFiles], workingDir), 1)
         if (zigGraph?.changed) {
             // TODO: check this earlier or make it not required
             if (!config.tsc.cmd.options.allowArbitraryExtensions) {
@@ -165,9 +167,7 @@ export function createProgramBuilder(
         }
 
         function determineCompilationModes(program: ts.Program) {
-            for (const f of allSourceFiles) {
-                if (isDeclarationFile(f)) continue
-
+            for (const f of allNonDeclarationFiles) {
                 const r = resourceGraph.getFileResourceInstantiations(f).length 
                 if (r > 0) {
                     getLogger().debug(`Marked ${f} as infra file`)
@@ -209,16 +209,15 @@ export function createProgramBuilder(
             : undefined
 
         // Entrypoints for synthesis, not package entrypoints
-        const entrypoints = allDeps ?  [...allDeps.roots].map(x => path.relative(getWorkingDir(), x)) : []
         const deployables = Object.fromEntries(
-            [...infraFiles].map(f => [path.relative(getWorkingDir(), f), getOutputFilename(config.tsc.rootDir, config.tsc.cmd.options, f)])
+            [...infraFiles].map(f => [makeRelative(getWorkingDir(), f), getOutputFilename(config.tsc.rootDir, config.tsc.cmd.options, f)])
         )
 
         const entrypointsFile: EntrypointsFile = {
-            entrypoints,
+            entrypoints: Object.keys(deployables),
             deployables,
             executables: Object.fromEntries(
-                [...executables].map(f => [path.relative(getWorkingDir(), f), getOutputFilename(config.tsc.rootDir, config.tsc.cmd.options, f)])
+                [...executables].map(f => [makeRelative(getWorkingDir(), f), getOutputFilename(config.tsc.rootDir, config.tsc.cmd.options, f)])
             )
         }
 
@@ -252,11 +251,7 @@ export function createProgramBuilder(
         }
 
         function doCompile(program: ts.Program) {
-            for (const f of allSourceFiles) {
-                if (isDeclarationFile(f)) {
-                    continue
-                }
-    
+            for (const f of allNonDeclarationFiles) {
                 if (targetFiles && !targetFiles.has(f)) {
                     continue
                 }
@@ -314,7 +309,7 @@ export function createProgramBuilder(
 
         const bt = getBuildTargetOrThrow()
 
-        const sources = await readSources() // double read
+        const sources = await readSources()
         if (!sources) {
             throw new Error(`No compilation artifacts found`)
         }
@@ -499,8 +494,8 @@ export function createEmitHost() {
             } else {
                 const bt = getBuildTargetOrThrow()
                 compilerHost.addSource(
-                    path.relative(bt.workingDirectory, sourceFile.fileName), 
-                    compilerHost.getOutputFilename(sourceFile.fileName), 
+                    makeRelative(bt.workingDirectory, sourceFile.fileName), 
+                    makeRelative(bt.workingDirectory, compilerHost.getOutputFilename(sourceFile.fileName)), 
                     true
                 )
             }
@@ -566,7 +561,6 @@ export function createHost(
     const schemaFactory = createSchemaFactory(program)
     const tsOptions = program.getCompilerOptions()
     const resourceTransformer = createTransformer(
-        getWorkingDir(), 
         getNullTransformationContext(), 
         graphCompiler,
         schemaFactory,
