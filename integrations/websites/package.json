@@ -10,7 +10,7 @@
             "exposeInternal": true
         },
         "pipeline": {
-            "publish": "internal"
+            "publish": true
         }
     }
 }

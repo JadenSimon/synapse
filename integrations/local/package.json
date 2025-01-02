@@ -9,7 +9,7 @@
             "exposeInternal": true
         },
         "pipeline": {
-            "publish": "internal",
+            "publish": true,
             "testPackage": {
                 "name": "spr:#conformance",
                 "commands": [
