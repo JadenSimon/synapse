@@ -11,6 +11,7 @@ import { Middleware, RouteRegexp, buildRouteRegexp, matchRoutes, HttpResponse, H
 import { createSerializedPolicy } from './iam'
 import { generateIdentifier } from 'synapse:lib'
 import * as compute from 'synapse:srl/compute'
+import * as net from 'synapse:srl/net'
 import { Provider } from '..'
 import { addResourceStatement, getPermissionsLater } from '../permissions'
 
@@ -25,7 +26,10 @@ export class Gateway {
 
     private requestRouter?: ReturnType<typeof createRequestRouter> & { fn: LambdaFunction }
 
-    public constructor(readonly props?: compute.HttpServiceOptions & { mergeHandlers?: boolean; allowedOrigins?: string[] }) {
+    // `network` sets the placement for the compute but not the gateway
+    // A network solver becomes desirable to avoid configuration overload.
+    // Then users only need to say what should be public. Everything else is private by default.
+    public constructor(readonly props?: compute.HttpServiceOptions & { mergeHandlers?: boolean; allowedOrigins?: string[]; network?: net.Network }) {
         const domain = (props?.domain && 'resource' in props.domain) ? props.domain as HostedZone : undefined
 
         const apig = new aws.Apigatewayv2Api({
@@ -73,8 +77,6 @@ export class Gateway {
                 ...router,
                 fn: this.addRouteInfra('$default', router.routeRequest)
             }
-
-            core.move('this.route')
 
             // if (!domain && typeof this.props?.auth !== 'function') {
             //     const healthCheck = this._addRoute('HEAD', '/__checkEndpoint__', () => {})
@@ -150,7 +152,9 @@ export class Gateway {
     }
 
     private addRouteInfra(route: string, handler: ApiGatewayHandler) {
-        const fn = new LambdaFunction(handler)
+        const fn = new LambdaFunction(handler, {
+            network: this.props?.network,
+        })
 
         const integration = new aws.Apigatewayv2Integration({
             apiId: this.resource.id,
@@ -164,11 +168,9 @@ export class Gateway {
             routeKey: route,
             target: `integrations/${integration.id}`,
             operationName: route,
-            // authorizationType: 'AWS_IAM', // 'NONE' | 'AWS_IAM' | 'CUSTOM
-            authorizationType: this.props?.auth === 'native' ? 'AWS_IAM' : 'NONE',
+            authorizationType: this.props?.auth === 'native' ? 'AWS_IAM' : 'NONE', // 'NONE' | 'AWS_IAM' | 'CUSTOM
         })
 
-        // BUG: this sometimes requires 2 deploys to get right...
         new aws.LambdaPermission({
             functionName: fn.resource.functionName,
             action: "lambda:InvokeFunction",
@@ -379,7 +381,7 @@ function wrapRequestHandler(
             duplex: 'half', // specific to node
         } as RequestInit)
 
-        ;(newReq as any).cookeis = request.cookies
+        ;(newReq as any).cookies = request.cookies
         ;(newReq as any).context = request.requestContext
         ;(newReq as any).pathParameters = request.pathParameters
 

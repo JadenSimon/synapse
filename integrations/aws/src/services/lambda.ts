@@ -2,6 +2,7 @@ import * as assert from 'node:assert'
 import * as path from 'node:path'
 import * as core from 'synapse:core'
 import * as lib from 'synapse:lib'
+import * as crypto from 'node:crypto'
 import * as Lambda from '@aws-sdk/client-lambda'
 import * as aws from 'synapse-provider:aws'
 import * as net from 'synapse:srl/net'
@@ -12,14 +13,14 @@ import { Provider } from '..'
 import { AsyncLocalStorage } from 'node:async_hooks'
 import { addResourceStatement, getPermissionsLater } from '../permissions'
 import { getLogEvents, listLogStreams } from './cloudwatch-logs'
+import { Vpc } from './ec2'
 
 interface LambdaOptions {
-    /** @unused */
     network?: net.Network
     timeout?: number
     name?: string
     createImage?: boolean
-    arch?: 'aarch64' | 'amd64'
+    arch?: 'aarch64' | 'x64'
     baseImage?: string
     imageCommands?: string[]
     /** Used for bundling */
@@ -39,21 +40,33 @@ export class LambdaFunction<T extends any[] = any[], U = unknown> implements com
     public readonly principal: Role
 
     public constructor(target: (...args: T) => Promise<U> | U, opt?: LambdaOptions) {
+        const arch = opt?.arch ?? 'aarch64'
         const entryPoint = new lib.Bundle(wrap(target), {
             // Bundling the SDK clients results in much better cold-start performance
             external: opt?.external,
             moduleTarget: !opt?.createImage ? 'esm' : undefined,
+            includeAssets: true,
+
+            // Only relevant for native code
+            os: 'linux',
+            arch,
         })
 
         const handler = `handler.default` // XXX: this name is hard-coded in `src/server.ts`
         const environment = opt?.env ?? {}
 
         const policyArn = 'arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole'
+        const managedPolicyArns: string[] = [policyArn]
+
+        if (opt?.network) {
+            managedPolicyArns.push('arn:aws:iam::aws:policy/service-role/AWSLambdaVPCAccessExecutionRole')
+        }
+
         const servicePrincipals = opt?.servicePrincipals ? [...opt.servicePrincipals, 'lambda.amazonaws.com'] : 'lambda.amazonaws.com'
         const role = new Role({
             name: opt?.name ? `${opt.name}` : undefined,
             assumeRolePolicy: JSON.stringify(spPolicy(servicePrincipals)),
-            managedPolicyArns: [policyArn],
+            managedPolicyArns,
         })
 
         getPermissionsLater(target, statements => {
@@ -69,6 +82,10 @@ export class LambdaFunction<T extends any[] = any[], U = unknown> implements com
             size: opt?.ephemeralStorage,
         } : undefined
 
+        const architectures = arch === 'aarch64' ? ['arm64'] : arch === 'x64' ? ['x86_64'] : undefined
+
+        const vpcConfig = opt?.network ? getVpcConfig(opt.network) : undefined
+
         if (opt?.createImage) {
             const { repo, deployment } = createImage(handler, entryPoint, opt.imageCommands, opt.baseImage, opt.name)
             const imageUri = `${repo.repositoryUrl}:${deployment.tagName}`
@@ -77,8 +94,9 @@ export class LambdaFunction<T extends any[] = any[], U = unknown> implements com
                 timeout: opt?.timeout ?? 900,
                 memorySize: opt?.memory ?? 1024,
                 packageType: 'Image',
-                architectures: opt.arch === 'aarch64' ? ['arm64'] : undefined,
+                architectures,
                 role: role.resource.arn,
+                vpcConfig,
                 environment: {
                     variables: {
                         ...environment,
@@ -93,10 +111,6 @@ export class LambdaFunction<T extends any[] = any[], U = unknown> implements com
                 publish: opt.publish,
                 reservedConcurrentExecutions: opt.reservedConcurrency,
                 ephemeralStorage,
-                // vpcConfig: opt?.network ? {
-                //     subnetIds: opt.network.subnets.map(s => s.id),
-                //     securityGroupIds: [opt.network.resource.defaultSecurityGroupId],
-                // } : undefined
             });
             this.resource = fn
         } else {
@@ -113,6 +127,8 @@ export class LambdaFunction<T extends any[] = any[], U = unknown> implements com
                 s3Bucket: obj.bucket,
                 s3Key: obj.key,
                 handler,
+                architectures,
+                vpcConfig,
                 timeout: opt?.timeout ?? 900,
                 memorySize: opt?.memory ?? 1024,
                 packageType: 'Zip',
@@ -171,7 +187,7 @@ export class LambdaFunction<T extends any[] = any[], U = unknown> implements com
         }
 
         const respObj = JSON.parse(resultString)
-        if (typeof respObj === 'object' && !!respObj && 'val' in respObj) {
+        if (isSynapseResponse(respObj)) {
             return deserialize(respObj.val, respObj.type)
         }
 
@@ -184,6 +200,17 @@ export class LambdaFunction<T extends any[] = any[], U = unknown> implements com
 
     public async invokeAsync(...args: T): Promise<void> {
         return this.doInvoke(args, { type: 'async' })
+    }
+}
+
+function getVpcConfig(network: net.Network): aws.LambdaFunctionVpcConfigProps {
+    if (!(network instanceof Vpc)) {
+        throw new Error('Not an AWS vpc')
+    }
+
+    return {
+        subnetIds: [network.subnets[0].id], // TODO: better configuration
+        securityGroupIds: [network.resource.defaultSecurityGroupId],
     }
 }
 
@@ -230,23 +257,32 @@ export interface LambdaContext {
 const TypedArray = Object.getPrototypeOf(Uint8Array)
 
 interface SynapseEvent {
-    readonly isSynapseEvent: true
+    readonly __synapse: true
     readonly args: any[]
     readonly types?: any[]
 }
 
 function isSynapseEvent(ev: any): ev is SynapseEvent {
-    return typeof ev === 'object' && !!ev && ev.isSynapseEvent
+    return typeof ev === 'object' && !!ev && ev.__synapse
 }
 
 interface SynapseResponse {
+    readonly __synapse: true
     readonly val: any
     readonly type?: any
+}
+
+function isSynapseResponse(ev: any): ev is SynapseResponse {
+    return typeof ev === 'object' && !!ev && ev.__synapse
 }
 
 function serialize(val: any): [v: any, type: any] | undefined {
     if (val instanceof TypedArray) {
         return [Buffer.from(val).toString('base64'), val.constructor.name]
+    }
+
+    if (typeof val === 'undefined') {
+        return [undefined, 'undefined']
     }
 }
 
@@ -256,6 +292,9 @@ function deserialize(val: any, type?: any): any {
         case 'Buffer':
         case 'Uint8Array':
             return Buffer.from(val, 'base64')
+
+        case 'undefined':
+            return undefined
 
         // TODO: everything else
         // It'll be easier to focus on refining a single serdes library
@@ -285,7 +324,7 @@ function toEvent(args: any[]): SynapseEvent {
     }
 
     return {
-        isSynapseEvent: true,
+        __synapse: true,
         types,
         args: args2,
     }
@@ -326,10 +365,10 @@ function wrap<T, U extends any[]>(fn: (...args: U) => T): LambdaHandler {
             const resp = await withContext(ctx, fromEvent(event))
             const serialized = serialize(resp)
             if (serialized) {
-                return { val: serialized[0], type: serialized[1] } satisfies SynapseResponse
+                return { val: serialized[0], type: serialized[1], __synapse: true } satisfies SynapseResponse
             }
 
-            return { val: resp } satisfies SynapseResponse
+            return { val: resp, __synapse: true } satisfies SynapseResponse
         } catch (err) {
             if (typeof err === 'object') {
                 console.error({
@@ -379,7 +418,7 @@ function createImage(handler: string, entrypoint: lib.Bundle, extraCommands?: st
     const dockerfile = new GeneratedDockerfile(entrypoint, { 
         baseImage: baseImage ?? '--platform=linux/amd64 public.ecr.aws/lambda/nodejs:18', // This base image already has `@aws-sdk`
         entrypoint: handler,
-        workingDirectory: '$${LAMBDA_TASK_ROOT}', // Need to escape ${}
+        workingDirectory: '${LAMBDA_TASK_ROOT}',
         postCopyCommands: extraCommands,
     })
 
@@ -420,6 +459,7 @@ core.registerLogProvider(
         return events.map(ev => {
             const msg = ev.message!
             // TODO: parse out JSON from the message
+            // TODO: I think this swallows init failures??
             const sourceType = !!msg.match(/^[A-Z]/) ? 'system' : 'user'
             if (sourceType === 'user') {
                 const columns = msg.split('\t')
