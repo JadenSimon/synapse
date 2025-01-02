@@ -1,3 +1,16 @@
 {
-    "steps": {}
+    "steps": {
+        "workflow1": {
+            "workingDir": "test/conformance",
+            "dependsOn": ["synapse", "synapse-aws"],
+            "test": [
+                "synapse deploy --target aws || synapse destroy",
+                "synapse test --destroy-after"
+            ],
+            "inputs": {
+                "useAws": true
+            },
+            "requiresManualTrigger": true
+        }
+    }
 }
