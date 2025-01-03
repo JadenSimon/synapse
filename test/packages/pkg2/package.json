@@ -5,6 +5,9 @@
     },
     "synapse": {
         "pipeline": {
+            "matrix": {
+                "environment": ["beta", "prod"]
+            },
             "test": true
         }
     }
