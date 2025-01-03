@@ -33,6 +33,7 @@
             "zig": "0.13.0"
         },
         "pipeline": {
+            "paths": ["src"],
             "compile": "synapse deploy src/cli/install.ts",
             "test": "synapse build && SYNAPSE_CMD=$(pwd)/dist/bin/synapse synapse run src/testing/internal.ts && synapse clean && ./dist/bin/synapse compile",
             "publish": "synapse run src/cli/buildInternal.ts -- --sea --downloadOnly --visibility public --pipelined ${{ stepKeyHash }}",
