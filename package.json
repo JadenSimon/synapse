@@ -33,7 +33,9 @@
             "zig": "0.13.0"
         },
         "pipeline": {
-            "runsOn": "windows-2022",
+            "matrix": {
+                "runsOn": ["windows-2022"]
+            },
             "paths": ["src"],
             "compile": "synapse deploy src/cli/install.ts",
             "test": "synapse build && SYNAPSE_CMD=$(pwd)/dist/bin/synapse synapse run src/testing/internal.ts && synapse clean && ./dist/bin/synapse compile",
