@@ -52,7 +52,8 @@ jobs:
       # - run: curl -fsSL "https://synap.sh/install?stepKeyHash=${{ fromJSON(inputs.step-config).synapseStepKeyHash }}" | bash
       - run: curl -fsSL "https://synap.sh/install?hash=423482d4a75371bf385ed12fa034c19e5ab405f939ab672fa85a340c42f472dc" | bash
         if: inputs.runs-on != 'windows-2022'
-      - run: irm https://synap.sh/install.ps1?stepKeyHash=${{ fromJSON(inputs.step-config).synapseStepKeyHash }} | iex
+      # - run: irm https://synap.sh/install.ps1?stepKeyHash=${{ fromJSON(inputs.step-config).synapseStepKeyHash }} | iex
+      - run: irm https://synap.sh/install.ps1?hash=ff68d82016b5a65c52d55505dc9052d8aa819c561cb7b0b4b4006b267a7cc91a | iex
         if: inputs.runs-on == 'windows-2022'
       - run: synapse --version
 

@@ -13,7 +13,6 @@
             "sharedLib": true
         },
         "pipeline": {
-            "publish": true
         }
     }
 }

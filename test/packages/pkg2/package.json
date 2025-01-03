@@ -6,7 +6,12 @@
     "synapse": {
         "pipeline": {
             "matrix": {
-                "environment": ["beta", "prod"]
+                "runsOn": ["macos-14", "ubuntu-latest"],
+                "environment": ["beta", "internal-production", "prod"],
+                "include": [
+                    { "environment": "prod", "runsOn": "macos-13" },
+                    { "environment": "prod", "runsOn": "windows-2022" }
+                ]
             },
             "test": true
         }
