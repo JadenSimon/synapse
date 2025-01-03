@@ -1,0 +1,14 @@
+{
+    "name": "pkg2",
+    "dependencies": {
+        "pkg1": "spr:#pkg1"
+    },
+    "synapse": {
+        "pipeline": {
+            "matrix": {
+                "runsOn": ["windows-2022"]
+            },
+            "test": true
+        }
+    }
+}
