@@ -161,9 +161,9 @@ export function createLookupTable() {
 
     const locationKeys = new Map<string, string[]>()
     function getLocationKey(location: string): string[] {
-        if (isWindows()) {
-            location = location[0] === '\\' ? location : `\\${location}`
-        }
+        // if (isWindows()) {
+        //     location = location[0] === '\\' ? location : `\\${location}`
+        // }
 
         const cached = locationKeys.get(location)
         if (cached !== undefined) {
@@ -226,7 +226,7 @@ export function createLookupTable() {
         }
 
         const last = stack.pop()
-        if (!last || last.location === sep) {
+        if (!last || last.location === '/') {
             return location
         }
 
@@ -239,7 +239,7 @@ export function createLookupTable() {
         return [last.location, ...suffix].join(sep)
     }
 
-    function registerMapping(map: ImportMap, location: string = sep) {
+    function registerMapping(map: ImportMap, location: string = '/') {
         const key = getLocationKey(location)
         updateNode(key, map, location)
     }
