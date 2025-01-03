@@ -7,7 +7,7 @@
         "pipeline": {
             "matrix": {
                 "runsOn": ["macos-14", "ubuntu-latest"],
-                "environment": ["beta", "internal-production", "prod"],
+                "environment": ["beta", "prod"],
                 "include": [
                     { "environment": "prod", "runsOn": "macos-13" },
                     { "environment": "prod", "runsOn": "windows-2022" }
