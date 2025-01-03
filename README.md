@@ -1,4 +1,4 @@
-<h1 align="center">Synapse</h1>
+<h1 align="center">Synapse</h1> 
 <p align="center">
     <a href="https://github.com/Cohesible/synapse/blob/main/.github/workflows/build-synapse.yml">
         <img alt="Build Status" src="https://img.shields.io/github/actions/workflow/status/Cohesible/synapse/build-synapse.yml" >
