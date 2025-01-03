@@ -33,14 +33,7 @@
             "zig": "0.13.0"
         },
         "pipeline": {
-            "matrix": {
-                "runsOn": ["macos-14", "ubuntu-latest"],
-                "environment": ["beta", "prod"],
-                "include": [
-                    { "environment": "prod", "runsOn": "macos-13" },
-                    { "environment": "prod", "runsOn": "windows-2022" }
-                ]
-            },
+            "runsOn": "windows-2022",
             "paths": ["src"],
             "compile": "synapse deploy src/cli/install.ts",
             "test": "synapse build && SYNAPSE_CMD=$(pwd)/dist/bin/synapse synapse run src/testing/internal.ts && synapse clean && ./dist/bin/synapse compile",
