@@ -9,3 +9,4 @@ test('environment', () => {
     expectEqual(pkg1.environment, process.env.SYNAPSE_ENV)
 })
 
+
