@@ -38,7 +38,7 @@
             },
             "paths": ["src"],
             "compile": "synapse deploy src/cli/install.ts",
-            "test": "synapse build && SYNAPSE_CMD=$(pwd)/dist/bin/synapse synapse run src/testing/internal.ts && synapse clean && ./dist/bin/synapse compile",
+            "test": "syn test src/runtime/lookup.ts && synapse build && SYNAPSE_CMD=$(pwd)/dist/bin/synapse synapse run src/testing/internal.ts && synapse clean && ./dist/bin/synapse compile",
             "publish": "synapse run src/cli/buildInternal.ts -- --sea --downloadOnly --visibility public --pipelined ${{ stepKeyHash }}",
             "dependsOn": ["synapse-aws", "synapse-local", "synapse-websites", "synapse-react"]
         }
