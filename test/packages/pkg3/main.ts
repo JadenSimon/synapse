@@ -145,6 +145,7 @@ export interface MapNode {
 
 export function createLookupTable() {
     const sep = path.sep
+    const isWin = isWindows()
     const trie = createTrie<MapNode, string[]>()
     const keys = new Map<ImportMap[string], string>()
 
@@ -161,9 +162,9 @@ export function createLookupTable() {
 
     const locationKeys = new Map<string, string[]>()
     function getLocationKey(location: string): string[] {
-        // if (isWindows()) {
-        //     location = location[0] === '\\' ? location : `\\${location}`
-        // }
+        if (isWin) {
+            location = location[0] === '\\' ? location : `\\${location}`
+        }
 
         const cached = locationKeys.get(location)
         if (cached !== undefined) {
@@ -201,7 +202,7 @@ export function createLookupTable() {
                 if (m && !m[k]) {
                     m[k] = mappings[k]
                 }
-            }
+            }      
 
             updateNode(key, v.mapping ?? {}, v.location, rootKey, v.locationType, v.source, new Set([...visited]))
         }
@@ -226,7 +227,7 @@ export function createLookupTable() {
         }
 
         const last = stack.pop()
-        if (!last || last.location === '/') {
+        if (!last || last.location === sep) {
             return location
         }
 
@@ -239,7 +240,7 @@ export function createLookupTable() {
         return [last.location, ...suffix].join(sep)
     }
 
-    function registerMapping(map: ImportMap, location: string = '/') {
+    function registerMapping(map: ImportMap, location: string = sep) {
         const key = getLocationKey(location)
         updateNode(key, map, location)
     }
@@ -344,9 +345,9 @@ suite('lookup table', () => {
     
     function makePackageMapping(dir: string, mappings?: Record<string, MappingFragment>): PackageMapping {
         return { type: 'package', dir, mappings }
-    }    
+    }
 
-    test('root mappings (pointer)', () => {
+    function setupTable() {
         const cwd = path.resolve()
         const t = createLookupTable()
     
@@ -366,30 +367,17 @@ suite('lookup table', () => {
     
         const x3 = t.lookup('test', x2.virtualLocation)
         expectEqual(x3?.physicalLocation, cwd)
+
+        return { t, cwd, x1, x2, x3 }
+    }
+
+    test('root mappings (pointer)', () => {
+        setupTable()
     })
 
     test('resolve virtual package', () => {
-        const cwd = path.resolve()
-        const t = createLookupTable()
-    
-        t.registerMapping(renderMappings({
-            'pointer:1': makePointerMapping('1', '100', {
-                'pointer:2': makePointerMapping('2', '100', {
-                    'test': makePackageMapping(cwd)
-                })
-            })
-        }))
-    
-        const x1 = t.lookup('pointer:1', cwd)
-        expectEqual(x1?.physicalLocation, 'pointer:100:1')
-    
-        const x2 = t.lookup('pointer:2', x1.virtualLocation)
-        expectEqual(x2?.physicalLocation, 'pointer:100:2')
-    
-        const x3 = t.lookup('test', x2.virtualLocation)
-        expectEqual(x3?.physicalLocation, cwd)
+        const { t, cwd, x3 } = setupTable()
 
-        // continued
         const pkgFile = path.join(x3.virtualLocation, 'dist', 'x.js')
         const x4 = t.resolve(pkgFile)
         expectEqual(x4, path.join(cwd, 'dist', 'x.js'))
@@ -398,6 +386,58 @@ suite('lookup table', () => {
         expectEqual(s?.node.location, cwd)
         expectEqual(s.remainder, path.join('dist', 'x.js'))
         expectEqual(s.specifier, 'test')
+    })
+
+    test('resolve non-root', () => {
+        const cwd = path.resolve()
+        const t = createLookupTable()
+    
+        t.registerMapping(renderMappings({
+            'test': makePackageMapping(path.resolve(cwd, 'x1'))
+        }), path.join(cwd, 'd1'))
+    
+        t.registerMapping(renderMappings({
+            'test': makePackageMapping(path.resolve(cwd, 'x2'))
+        }), path.join(cwd, 'd2'))
+
+        expectEqual(t.lookup('test', cwd), undefined)
+
+        const x1 = t.lookup('test', path.join(cwd, 'd1'))
+        expectEqual(x1?.physicalLocation, path.resolve(cwd, 'x1'))
+
+        const x2 = t.lookup('test', path.join(cwd, 'd2'))
+        expectEqual(x2?.physicalLocation, path.resolve(cwd, 'x2'))
+
+        // Nested check
+        expectEqual(
+            t.lookup('test', path.join(cwd, 'd2', 'a'))?.physicalLocation, 
+            path.resolve(cwd, 'x2')
+        )
+
+        const nested = path.join(x2.virtualLocation, 'foo', 'bar')
+        expectEqual(t.resolve(nested), path.resolve(cwd, 'x2', 'foo', 'bar'))
+    })
+
+
+    test('merging', () => {
+        const cwd = path.resolve()
+        const t = createLookupTable()
+    
+        t.registerMapping(renderMappings({
+            'test1': makePackageMapping(path.resolve(cwd, 'x1'))
+        }), cwd)
+    
+        t.registerMapping(renderMappings({
+            'test2': makePackageMapping(path.resolve(cwd, 'x2'))
+        }), cwd)
+
+        expectEqual(t.lookup('test', cwd), undefined)
+
+        const x1 = t.lookup('test1', cwd)
+        expectEqual(x1?.physicalLocation, path.resolve(cwd, 'x1'))
+
+        const x2 = t.lookup('test2', cwd)
+        expectEqual(x2?.physicalLocation, path.resolve(cwd, 'x2'))
     })
 })
 
