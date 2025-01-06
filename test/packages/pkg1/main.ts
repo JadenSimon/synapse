@@ -1,6 +1,6 @@
 import * as fs from 'node:fs/promises'
 import { defineResource } from 'synapse:core'
-
+// ah
 class File extends defineResource({
     create: async (fileName: string) => {
         const text = await fs.readFile(fileName, 'utf-8')
