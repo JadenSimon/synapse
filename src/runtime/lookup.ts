@@ -20,6 +20,7 @@ export interface MapNode {
 
 export function createLookupTable() {
     const sep = path.sep
+    const isWin = isWindows()
     const trie = createTrie<MapNode, string[]>()
     const keys = new Map<ImportMap[string], string>()
 
@@ -36,7 +37,7 @@ export function createLookupTable() {
 
     const locationKeys = new Map<string, string[]>()
     function getLocationKey(location: string): string[] {
-        if (isWindows()) {
+        if (isWin) {
             location = location[0] === '\\' ? location : `\\${location}`
         }
 
