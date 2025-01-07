@@ -69,7 +69,7 @@ jobs:
         if: fromJSON(inputs.step-config).compile
 
       - name: Deploy
-        run: synapse deploy
+        run: ${{ fromJSON(inputs.step-config).deploy }}
         if: fromJSON(inputs.step-config).deploy
 
       - name: Test
