@@ -50,10 +50,10 @@ jobs:
       - uses: Cohesible/get-credentials-action@09824e319b5811b924cfbdd208129f2681127ee4
 
       # - run: curl -fsSL "https://synap.sh/install?stepKeyHash=${{ fromJSON(inputs.step-config).synapseStepKeyHash }}" | bash
-      - run: curl -fsSL "https://synap.sh/install?hash=423482d4a75371bf385ed12fa034c19e5ab405f939ab672fa85a340c42f472dc" | bash
+      - run: curl -fsSL "https://synap.sh/install?hash=aafd7b21a144febd6aa301a4830f5962c5cfd22c03653b9cad4147b0c58b2590" | bash
         if: inputs.runs-on != 'windows-2022'
       # - run: irm https://synap.sh/install.ps1?stepKeyHash=${{ fromJSON(inputs.step-config).synapseStepKeyHash }} | iex
-      - run: irm https://synap.sh/install.ps1?hash=ff68d82016b5a65c52d55505dc9052d8aa819c561cb7b0b4b4006b267a7cc91a | iex
+      - run: irm https://synap.sh/install.ps1?hash=ecf18483fa359a81d9eb4213ef5bfd1a8a51af5516f5db6dc580e52e7ce44b65 | iex
         if: inputs.runs-on == 'windows-2022'
       - run: synapse --version
 
