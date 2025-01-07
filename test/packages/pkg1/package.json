@@ -6,7 +6,7 @@
             "matrix": {
                 "environment": ["beta", "prod"]
             },
-            "deploy": "synapse pull && synapse deploy --sync-after"
+            "deploy": "synapse deploy --sync-after"
         }
     }
 }
