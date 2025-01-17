@@ -4907,8 +4907,10 @@ async function syncHeads(repo: DataRepository, remote: RemoteArtifactRepository,
     const isLocalNewer = !remoteHead?.timestamp || (localHead && (new Date(remoteHead.timestamp).getTime() < new Date(localHead.timestamp).getTime()))
     if (isLocalNewer && localHead) {
         getLogger().debug(`Pushing local changes to remote`, localHead.id)
-        await remote.push(localHead.storeHash)
-        if (localHead.programHash) {
+        if (localHead.storeHash !== remoteHead?.storeHash) {
+            await remote.push(localHead.storeHash)
+        }
+        if (localHead.programHash && localHead.programHash !== remoteHead?.programHash) {
             await remote.push(localHead.programHash)
         }
         await remote.putHead(localHead)

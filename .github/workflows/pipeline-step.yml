@@ -16,7 +16,8 @@ on:
       runs-on:
         type: string
         default: ubuntu-latest
-
+      pipeline-fs-script:
+        type: string
 jobs:
   execute:
     runs-on: ${{ inputs.runs-on }}
@@ -46,6 +47,18 @@ jobs:
         with: 
           aws-region: us-west-2
           role-to-assume: ${{ secrets.TEST_IAM_ROLE }}
+
+      - name: Setup scripts
+        run: mkdir -p .scripts && echo "$PWD/.scripts" >> $GITHUB_PATH
+        if: inputs.pipeline-fs-script
+
+      - name: Pipeline FS
+        run: echo "${{ inputs.pipeline-fs-script }}" | base64 --decode > .scripts/pipeline-fs && chmod +x .scripts/pipeline-fs
+        if: inputs.pipeline-fs-script
+
+      - name: Pipeline FS (test)
+        run: pipeline-fs upload "runs/${{ fromJSON(inputs.step-config).synapseStepKeyHash }}/test" package.json
+        if: inputs.pipeline-fs-script
 
       - uses: Cohesible/get-credentials-action@09824e319b5811b924cfbdd208129f2681127ee4
 
