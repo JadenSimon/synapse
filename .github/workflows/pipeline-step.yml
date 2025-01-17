@@ -57,7 +57,7 @@ jobs:
         if: inputs.pipeline-fs-script
 
       - name: Pipeline FS (test)
-        run: pipeline-fs upload "runs/${{ fromJSON(inputs.step-config).synapseStepKeyHash }}/test" package.json
+        run: pipeline-fs upload "runs/${{ fromJSON(inputs.step-config).stepKeyHash }}/test" package.json
         if: inputs.pipeline-fs-script
 
       - uses: Cohesible/get-credentials-action@09824e319b5811b924cfbdd208129f2681127ee4
