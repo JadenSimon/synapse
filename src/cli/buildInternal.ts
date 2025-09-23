@@ -196,7 +196,7 @@ async function maybeUseGithubArtifact(ref: string, target: QualifiedBuildTarget,
     }
 
     async function downloadAndExtract(url: string) {
-        const archive = await github.fetchData(url, undefined, true)
+        const archive = await github.fetchData(url, 'application/vnd.github+json', true)
 
         const files = await listFilesInZip(archive)
         if (files.length === 0) {
