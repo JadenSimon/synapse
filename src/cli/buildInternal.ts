@@ -14,7 +14,7 @@ import { QualifiedBuildTarget, resolveBuildTarget } from '../build/builder'
 import { execCommand, runCommand } from '../utils/process'
 import { toAbsolute, toDataPointer } from '../build-fs/pointers'
 import { glob } from '../utils/glob'
-import { getCiType, gzip, makeExecutable, memoize, throwIfNotFileNotFoundError, tryReadJson } from '../utils'
+import { getCiType, gunzip, gzip, makeExecutable, memoize, throwIfNotFileNotFoundError, tryReadJson } from '../utils'
 import { getLogger } from '../logging'
 import { createZipFromDir } from '../deploy/deployment'
 import { tmpdir } from 'node:os'
@@ -74,7 +74,7 @@ export async function downloadIntegrations(dest: string, included?: string[]) {
         )
         const tarball = await getFs().readFile(dest)
         await getFs().deleteFile(dest)
-        const files = extractTarball(Buffer.from(tarball))
+        const files = extractTarball(await gunzip(tarball))
         await Promise.all(files.map(async f => {
             const absPath = path.resolve(dest, f.path)
             await getFs().writeFile(absPath, f.contents, { mode: f.mode })
