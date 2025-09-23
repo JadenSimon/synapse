@@ -68,7 +68,7 @@ export async function downloadIntegrations(dest: string, included?: string[]) {
         console.log('downloading', d, '-->', key)
         const dest = path.resolve(packagesDir, `tmp.tgz`)
         await ensureDir(path.dirname(dest))
-        const args = ['download', `runs/${key}/pkg.tgz`, dest]
+        const args = ['download', `runs/${key}/package`, dest]
         await runCommand('pipeline-fs', args, { stdio: 'inherit', shell: '/usr/bin/bash' })
         const tarball = await getFs().readFile(dest)
         await getFs().deleteFile(dest)
@@ -1122,7 +1122,7 @@ export async function internalBundle(target?: string, opt: any = {}) {
             })
         }
 
-        const args = ['upload', `runs/${opt.pipelined}/pkg.tgz`, tarballPath]
+        const args = ['upload', `runs/${opt.pipelined}/package`, tarballPath]
         await runCommand('pipeline-fs', args, { stdio: 'inherit', shell: '/usr/bin/bash' })
 
         return
