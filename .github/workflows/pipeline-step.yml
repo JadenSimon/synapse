@@ -35,7 +35,7 @@ jobs:
       # SYNAPSE_FORCE_REMOTE_PROJECTS: yes
       SYNAPSE_ENV: ${{ fromJSON(inputs.step-config).environment || '' }}
       SYNAPSE_PIPELINE_DEPS: ${{ fromJSON(inputs.pipeline-context).deps }}
-      CROSSREPO_GITHUB_TOKEN: ${{ secrets.GH_TOKEN }}
+      CROSSREPO_GITHUB_TOKEN: ${{ secrets.CROSSREPO_GITHUB_TOKEN }}
 
     steps:
       - uses: actions/checkout@v4
