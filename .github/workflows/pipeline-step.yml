@@ -32,7 +32,7 @@ jobs:
     env:
       SYNAPSE_LOG: debug
       SYNAPSE_USE_PIPELINE_FS: yes
-      SYNAPSE_FORCE_REMOTE_PROJECTS: yes
+      # SYNAPSE_FORCE_REMOTE_PROJECTS: yes
       SYNAPSE_ENV: ${{ fromJSON(inputs.step-config).environment || '' }}
       SYNAPSE_PIPELINE_DEPS: ${{ fromJSON(inputs.pipeline-context).deps }}
       CROSSREPO_GITHUB_TOKEN: ${{ secrets.GH_TOKEN }}
