@@ -4,7 +4,7 @@ import * as compute from 'synapse:srl/compute'
 import { HttpError } from 'synapse:http'
 import { LocalKVStore } from './bucket'
 import { createHash } from 'node:crypto'
-//
+
 function hashObj(o: any) {
     return createHash('sha256').update(JSON.stringify(o)).digest('hex')
 }
