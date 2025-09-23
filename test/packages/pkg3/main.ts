@@ -1,5 +1,5 @@
 import * as path from 'node:path'
-import { suite, test, expectEqual } from 'synapse:test'
+import { suite, test, expect, expectEqual } from 'synapse:test'
 
 export function isWindows() {
     return process.platform === 'win32'
@@ -162,10 +162,6 @@ export function createLookupTable() {
 
     const locationKeys = new Map<string, string[]>()
     function getLocationKey(location: string): string[] {
-        if (isWin) {
-            location = location[0] === '\\' ? location : `\\${location}`
-        }
-
         const cached = locationKeys.get(location)
         if (cached !== undefined) {
             return cached
@@ -196,13 +192,14 @@ export function createLookupTable() {
                 locationType: v.locationType,
             }
 
-            // Sift the mapping upwards to simulate node (TODO: is this still needed?)
+            // Sift the mapping upwards to simulate node
+            // TODO: this is only needed because of `specifier` in `getSourceWithRemainder`
             if (key !== rootKey) {
                 const m = trie.get(rootKey)?.mappings
                 if (m && !m[k]) {
                     m[k] = mappings[k]
                 }
-            }      
+            }
 
             updateNode(key, v.mapping ?? {}, v.location, rootKey, v.locationType, v.source, new Set([...visited]))
         }
@@ -228,16 +225,24 @@ export function createLookupTable() {
 
         const last = stack.pop()
         if (!last || last.location === sep) {
-            return location
+            return isWin && location[0] === '\\' ? location.slice(1) : location
         }
+
+        let result: string
 
         // We add 1 because we popped the stack
         const suffix = key.slice(stack.length + 1)
         if (last.locationType === 'module' && suffix.length > 0) {
-            return [path.dirname(last.location), ...suffix].join(sep)
+            result = [path.dirname(last.location), ...suffix].join(sep)
+        } else {
+            result = [last.location, ...suffix].join(sep)
         }
 
-        return [last.location, ...suffix].join(sep)
+        if (isWin && result[0] === '\\') {
+            result = result.slice(1)
+        }
+
+        return result
     }
 
     function registerMapping(map: ImportMap, location: string = sep) {
@@ -438,6 +443,25 @@ suite('lookup table', () => {
 
         const x2 = t.lookup('test2', cwd)
         expectEqual(x2?.physicalLocation, path.resolve(cwd, 'x2'))
+    })
+
+    test('resolve (pointer relative)', () => {
+        const t = createLookupTable()
+        const cwd = path.resolve()
+        const root = 'pointer:0'
+
+        t.registerMapping(renderMappings({
+            'pointer:1': makePointerMapping('1', '100', {
+                'pointer:2': makePointerMapping('2', '100', {
+                    'test': makePackageMapping(cwd)
+                })
+            })
+        }), root)
+
+        const x1 = t.lookup('test', root)
+        expect(x1)
+        const x2 = t.resolve(x1.virtualLocation)
+        expectEqual(x2, cwd)
     })
 })
 

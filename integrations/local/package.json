@@ -9,6 +9,7 @@
             "exposeInternal": true
         },
         "pipeline": {
+            "publish": "synapse publish --archive pkg.tgz && pipeline-fs upload 'runs/${{ fromJSON(inputs.pipeline-context).stepKeyHash }}/pkg.tgz' pkg.tgz",
             "testPackage": {
                 "name": "spr:#conformance",
                 "commands": [

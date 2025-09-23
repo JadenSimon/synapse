@@ -3,7 +3,7 @@
     "synapse": {
         "pipeline": {
             "matrix": {
-                "runsOn": ["windows-2022"]
+                "runsOn": ["windows-2025"]
             },
             "test": true
         }
