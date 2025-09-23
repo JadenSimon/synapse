@@ -105,3 +105,5 @@ export class SimpleLock {
 }
 
 core.addTarget(compute.SimpleLock, SimpleLock, 'local')
+
+//
