@@ -70,7 +70,7 @@ export async function downloadIntegrations(dest: string, included?: string[]) {
         await ensureDir(tmpDest)
         await execCommand(
             `pipeline-fs download "runs/${key}/package" "${tmpDest}"`, 
-            { stdio: 'inherit', shell: '/usr/bin/bash' }
+            { stdio: 'inherit', shell: 'bash' }
         )
         const tarball = await getFs().readFile(tmpDest)
         await getFs().deleteFile(tmpDest)
@@ -1126,7 +1126,7 @@ export async function internalBundle(target?: string, opt: any = {}) {
 
         console.log('upload key', `runs/${opt.pipelined}/package`)
         const args = ['upload', `runs/${opt.pipelined}/package`, tarballPath]
-        await runCommand('pipeline-fs', args, { stdio: 'inherit', shell: '/usr/bin/bash' })
+        await runCommand('pipeline-fs', args, { stdio: 'inherit', shell: 'bash' })
 
         return
     }
