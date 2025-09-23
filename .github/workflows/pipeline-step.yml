@@ -92,4 +92,3 @@ jobs:
         run: ${{ fromJSON(inputs.step-config).publish }}
         if: fromJSON(inputs.step-config).publish
 
-
