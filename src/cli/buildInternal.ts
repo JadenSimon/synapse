@@ -196,7 +196,7 @@ async function maybeUseGithubArtifact(ref: string, target: QualifiedBuildTarget,
     }
 
     async function downloadAndExtract(url: string) {
-        const archive = await github.fetchData(url)
+        const archive = await github.fetchData(url, undefined, true)
 
         const files = await listFilesInZip(archive)
         if (files.length === 0) {
