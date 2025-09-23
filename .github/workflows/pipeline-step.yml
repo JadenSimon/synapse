@@ -57,13 +57,9 @@ jobs:
         run: echo "${{ inputs.pipeline-fs-script }}" | base64 --decode > .scripts/pipeline-fs && chmod +x .scripts/pipeline-fs
         if: inputs.pipeline-fs-script
 
-      - name: Pipeline FS (test)
-        run: pipeline-fs upload "runs/${{ fromJSON(inputs.pipeline-context).stepKeyHash }}/test" package.json
-        if: inputs.pipeline-fs-script
-
       - uses: Cohesible/get-credentials-action@09824e319b5811b924cfbdd208129f2681127ee4
 
-      # -  run: curl -fsSL "https://synap.sh/install?stepKeyHash=${{ fromJSON(inputs.step-config).synapseStepKeyHash }}" | bash
+      # - run: curl -fsSL "https://synap.sh/install?stepKeyHash=${{ fromJSON(inputs.step-config).synapseStepKeyHash }}" | bash
       - run: curl -fsSL https://synap.sh/install | bash
         if: inputs.runs-on != 'windows-2025'
       # - run: irm https://synap.sh/install.ps1?stepKeyHash=${{ fromJSON(inputs.step-config).synapseStepKeyHash }} | iex
