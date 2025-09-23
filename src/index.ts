@@ -390,7 +390,7 @@ export async function deploy(targets: string[], opt: DeployOpt2 = {}) {
     const maybeMoved = await checkCompileForDeploy(targets, opt)
     // TODO: return early if there is nothing to deploy
     // Currently users see "No deployment associated with build target" if they
-    // try to deploy a file that does not instantiate any resources
+    // try to deploy a file that does not instantiate any resources 
 
     const deploymentId = getTargetDeploymentIdOrThrow()
     const session = await getSession(deploymentId, opt?.sessionCtx, { parallelism: 50 })
