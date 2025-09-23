@@ -235,6 +235,7 @@ async function maybeUseGithubArtifact(ref: string, target: QualifiedBuildTarget,
         return
     }
 
+    getLogger().log('downloading artifact', match.archive_download_url)
     return downloadAndExtract(match.archive_download_url)
 }
 
