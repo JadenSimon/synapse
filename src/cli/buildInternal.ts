@@ -1131,7 +1131,7 @@ export async function internalBundle(target?: string, opt: any = {}) {
         return
     }
 
-    // darwin we use `.zip` for signing
+    // darwin we use `.zip` for signing 
     const extname = opt.seaPrep || os === 'linux' ? '.tgz' : '.zip'
     await createArchive(outdir, `${outdir}${extname}`, shouldSign && !opt.seaPrep)
 }
