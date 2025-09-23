@@ -11,7 +11,7 @@ import { downloadSynapsePackages, installModules } from '../pm/packages'
 import { createMergedView, createSynapseTarball, publishToRemote } from '../pm/publish'
 import { Snapshot, consolidateBuild, createSnapshot, dumpData, getDataRepository, getDeploymentFs, getModuleMappings, getProgramFs, getSnapshotPath, linkFs, pruneBuild, writeSnapshotFile } from '../artifacts'
 import { QualifiedBuildTarget, resolveBuildTarget } from '../build/builder'
-import { runCommand } from '../utils/process'
+import { execCommand, runCommand } from '../utils/process'
 import { toAbsolute, toDataPointer } from '../build-fs/pointers'
 import { glob } from '../utils/glob'
 import { getCiType, gzip, makeExecutable, memoize, throwIfNotFileNotFoundError, tryReadJson } from '../utils'
@@ -66,10 +66,12 @@ export async function downloadIntegrations(dest: string, included?: string[]) {
         }
 
         console.log('downloading', d, '-->', key)
-        const dest = path.resolve(packagesDir, `tmp.tgz`)
+        const dest = path.resolve(packagesDir, `tmp`)
         await ensureDir(path.dirname(dest))
-        const args = ['download', `runs/${key}/package`, dest]
-        await runCommand('pipeline-fs', args, { stdio: 'inherit', shell: '/usr/bin/bash' })
+        await execCommand(
+            `pipeline-fs download "runs/${key}/package" "${dest}"`, 
+            { stdio: 'inherit', shell: '/usr/bin/bash' }
+        )
         const tarball = await getFs().readFile(dest)
         await getFs().deleteFile(dest)
         const files = extractTarball(Buffer.from(tarball))
