@@ -33,6 +33,9 @@
             "zig": "0.13.0"
         },
         "pipeline": {
+            "matrix": {
+                "runsOn": ["macos-14"]
+            },
             "dependsOn": ["synapse-aws", "synapse-local"],
             "compile": "(SYNAPSE_PIPELINE_DEPS='' synapse compile) && synapse deploy src/cli/install.ts",
             "publish": "synapse run src/cli/buildInternal.ts -- --sea --downloadOnly --visibility public --pipelined ${{ stepKeyHash }}"

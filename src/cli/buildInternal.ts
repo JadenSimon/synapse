@@ -1124,6 +1124,7 @@ export async function internalBundle(target?: string, opt: any = {}) {
             })
         }
 
+        console.log('upload key', `runs/${opt.pipelined}/package`)
         const args = ['upload', `runs/${opt.pipelined}/package`, tarballPath]
         await runCommand('pipeline-fs', args, { stdio: 'inherit', shell: '/usr/bin/bash' })
 
