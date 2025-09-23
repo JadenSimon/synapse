@@ -66,14 +66,14 @@ export async function downloadIntegrations(dest: string, included?: string[]) {
         }
 
         console.log('downloading', d, '-->', key)
-        const dest = path.resolve(packagesDir, `tmp`)
-        await ensureDir(dest)
+        const tmpDest = path.resolve(packagesDir, `tmp`)
+        await ensureDir(tmpDest)
         await execCommand(
-            `pipeline-fs download "runs/${key}/package" "${dest}"`, 
+            `pipeline-fs download "runs/${key}/package" "${tmpDest}"`, 
             { stdio: 'inherit', shell: '/usr/bin/bash' }
         )
-        const tarball = await getFs().readFile(dest)
-        await getFs().deleteFile(dest)
+        const tarball = await getFs().readFile(tmpDest)
+        await getFs().deleteFile(tmpDest)
         const files = extractTarball(await gunzip(tarball))
         await Promise.all(files.map(async f => {
             const absPath = path.resolve(dest, f.path)
