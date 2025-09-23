@@ -34,7 +34,7 @@
         },
         "pipeline": {
             "dependsOn": ["synapse-aws", "synapse-local"],
-            "compile": "synapse compile && synapse deploy src/cli/install.ts",
+            "compile": "(SYNAPSE_PIPELINE_DEPS='' synapse compile) && synapse deploy src/cli/install.ts",
             "publish": "synapse run src/cli/buildInternal.ts -- --sea --downloadOnly --visibility public --pipelined ${{ stepKeyHash }}"
         }
     }
