@@ -67,7 +67,7 @@ export async function downloadIntegrations(dest: string, included?: string[]) {
 
         console.log('downloading', d, '-->', key)
         const dest = path.resolve(packagesDir, `tmp`)
-        await ensureDir(path.dirname(dest))
+        await ensureDir(dest)
         await execCommand(
             `pipeline-fs download "runs/${key}/package" "${dest}"`, 
             { stdio: 'inherit', shell: '/usr/bin/bash' }
