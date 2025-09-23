@@ -29,7 +29,7 @@ async function installIntegrations(mapping: Record<string, string>) {
 
 async function main() {
     const deps = getPipelineDeps()
-    if (!deps) {
+    if (!deps || !Object.keys(deps).length) {
         console.log('no deps found')
         return
     }

@@ -74,7 +74,7 @@ jobs:
         run: sudo apt-get update -y && sudo apt-get install ${{ fromJSON(inputs.step-config).systemDeps }} -y
         if: fromJSON(inputs.step-config).systemDeps && startsWith(inputs.runs-on, 'ubuntu')
 
-      - run: synapse installDeps.ts
+      - run: synapse /home/runner/work/synapse/synapse/installDeps.ts
 
       - run: ${{ fromJSON(inputs.step-config).commands }}
         if: fromJSON(inputs.step-config).commands
