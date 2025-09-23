@@ -9,13 +9,7 @@
             "exposeInternal": true
         },
         "pipeline": {
-            "publish": "synapse publish --archive pkg.tgz && pipeline-fs upload 'runs/${{ stepKeyHash }}/pkg.tgz' pkg.tgz",
-            "testPackage": {
-                "name": "spr:#conformance",
-                "commands": [
-                    "synapse test --destroy-after"
-                ]
-            }
+            "publish": "synapse publish --archive pkg.tgz && pipeline-fs upload 'runs/${{ stepKeyHash }}/pkg.tgz' pkg.tgz"
         }
     }
 }

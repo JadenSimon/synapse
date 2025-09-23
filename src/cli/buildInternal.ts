@@ -22,14 +22,11 @@ import { bundleExecutable, bundlePkg } from '../closures'
 import { buildWindowsShim } from '../zig/compile'
 import { makeSea, resolveAssets } from '../build/sea'
 import { logToStderr } from './logger'
+import { ensureDir } from '../system'
 
 const integrations = {
     'synapse-aws': 'integrations/aws',
     'synapse-local': 'integrations/local',
-
-    // Frontend stuff
-    'synapse-react': 'integrations/frontend-runtimes/react',
-    'synapse-websites': 'integrations/websites',
 }
 
 export async function copyIntegrations(rootDir: string, dest: string, included?: string[]) {
@@ -47,7 +44,40 @@ export async function downloadIntegrations(dest: string, included?: string[]) {
     const include = included ? new Set(included) : undefined
     const deps = Object.keys(integrations).filter(k => !include || include.has(k))
 
-    await downloadSynapsePackages(packagesDir, deps)
+    if (!process.env.SYNAPSE_USE_PIPELINE_FS) {
+        return await downloadSynapsePackages(packagesDir, deps)
+    }
+
+    const getPipelineDeps = () => {
+        const data = process.env.SYNAPSE_PIPELINE_DEPS
+        if (!data) {
+            throw new Error('missing pipeline deps')
+        }
+
+        return JSON.parse(data) as Record<string, string | { stepKeyHash: string; gitRef?: string; repoUrl?: string }>
+    }
+
+    const pipelineDeps = getPipelineDeps()
+
+    for (const d of deps) {
+        const key = pipelineDeps[d]
+        if (!key) {
+            throw new Error(`missing pipeline dep hash: ${d}`)
+        }
+
+        console.log('downloading', d, '-->', key)
+        const dest = path.resolve(packagesDir, `tmp.tgz`)
+        await ensureDir(path.dirname(dest))
+        const args = ['download', `runs/${key}/pkg.tgz`, dest]
+        await runCommand('pipeline-fs', args, { stdio: 'inherit' })
+        const tarball = await getFs().readFile(dest)
+        await getFs().deleteFile(dest)
+        const files = extractTarball(Buffer.from(tarball))
+        await Promise.all(files.map(async f => {
+            const absPath = path.resolve(dest, f.path)
+            await getFs().writeFile(absPath, f.contents, { mode: f.mode })
+        }))
+    }
 }
 
 const baseUrl = 'https://nodejs.org/download/release'
@@ -222,6 +252,7 @@ async function findLibtoolFromClang(clangPath: string) {
     return res
 }
 
+// opt/homebrew/opt/llvm/bin/clang  
 const homebrewClangPath = '/opt/homebrew/bin/clang'
 
 // Needs python + ninja installed
@@ -375,7 +406,8 @@ export async function createPackageForRelease(
     target?: Partial<QualifiedBuildTarget> & BuildTargetExtras, 
     isIntegration?: boolean, 
     useCompiledPkgJson = false, 
-    keepExportedTypes = false
+    keepExportedTypes = false,
+    keepSourcemaps = false,
 ) {
     const pkg = await getPackageJsonOrThrow(pkgDir) 
     const bt = await resolveProgramBuildTarget(pkgDir, { environmentName: target?.environmentName })
@@ -425,10 +457,16 @@ export async function createPackageForRelease(
     for (const f of Object.keys(pruned.files)) {
         if (isIntegration && (f.endsWith('.js') || f.endsWith('.d.ts')) || f === 'package.json') {
             filesToKeep.push(f)
+        } else if (keepSourcemaps && f.endsWith('.map')) {
+            filesToKeep.push(f)
         }
     }
 
-    const consolidated = await consolidateBuild(getDataRepository(), pruned, filesToKeep, { strip: true })
+    const consolidated = await consolidateBuild(getDataRepository(), pruned, filesToKeep, { 
+        strip: !keepSourcemaps,
+        sourceInfo: keepSourcemaps ? { programId: bt.programId, projectId: bt.projectId, deploymentId: bt.deploymentId } : undefined,
+    })
+
     const { snapshot } = await createSnapshot(consolidated.index, programId, deploymentId)
 
     pruneSnapshot(snapshot, filesToKeep, keepExportedTypes)
@@ -1075,11 +1113,18 @@ export async function internalBundle(target?: string, opt: any = {}) {
         const tarballPath = `${outdir}.tgz`
         await createArchive(outdir, tarballPath, shouldSign && !opt.seaPrep)
 
-        return publishToRemote({
-            ref: opt.pipelined,
-            tarballPath,
-            visibility: opt.visibility === 'public' ? 'public' : opt.visibility === 'private' ? 'private' : undefined,
-        })
+        if (!process.env.SYNAPSE_USE_PIPELINE_FS) {
+            return publishToRemote({
+                ref: opt.pipelined,
+                tarballPath,
+                visibility: opt.visibility === 'public' ? 'public' : opt.visibility === 'private' ? 'private' : undefined,
+            })
+        }
+
+        const args = ['upload', `runs/${opt.pipelined}/pkg.tgz`, tarballPath]
+        await runCommand('pipeline-fs', args, { stdio: 'inherit' })
+
+        return
     }
 
     // darwin we use `.zip` for signing
