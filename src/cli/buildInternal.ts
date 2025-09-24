@@ -70,7 +70,7 @@ export async function downloadIntegrations(dest: string, included?: string[]) {
         await ensureDir(tmpDest)
         await execCommand(
             `pipeline-fs download "runs/${key}/package" "${tmpDest}"`, 
-            { stdio: 'inherit', shell: 'bash' }
+            { stdio: 'inherit', shell: '/bin/bash' }
         )
         const tarball = await getFs().readFile(tmpDest)
         await getFs().deleteFile(tmpDest)
@@ -1126,12 +1126,12 @@ export async function internalBundle(target?: string, opt: any = {}) {
 
         console.log('upload key', `runs/${opt.pipelined}/package`)
         const args = ['upload', `runs/${opt.pipelined}/package`, tarballPath]
-        await runCommand('pipeline-fs', args, { stdio: 'inherit', shell: 'bash' })
+        await runCommand('pipeline-fs', args, { stdio: 'inherit', shell: '/bin/bash' })
 
         return
     }
 
-    // darwin we use `.zip` for signing 
+    // darwin we use `.zip` for signing
     const extname = opt.seaPrep || os === 'linux' ? '.tgz' : '.zip'
     await createArchive(outdir, `${outdir}${extname}`, shouldSign && !opt.seaPrep)
 }
