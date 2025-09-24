@@ -20,7 +20,7 @@ on:
         type: string
 jobs:
   execute:
-    runs-on: ${{ inputs.runs-on }}
+    runs-on: ${{ fromJSON(inputs.step-config).inputs.runsOn || inputs.runs-on }}
     permissions:
       id-token: write
       contents: read

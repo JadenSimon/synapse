@@ -33,8 +33,8 @@
             "zig": "0.13.0"
         },
         "pipeline": {
-            "matrix": {
-                "runsOn": ["macos-14"]
+            "inputs": {
+                "runsOn": "macos-15"
             },
             "dependsOn": ["synapse-aws", "synapse-local"],
             "compile": "(SYNAPSE_PIPELINE_DEPS='' synapse compile) && synapse deploy src/cli/install.ts",
