@@ -76,7 +76,7 @@ export async function downloadIntegrations(dest: string, included?: string[]) {
         await getFs().deleteFile(tmpDest)
         const files = extractTarball(await gunzip(tarball))
         await Promise.all(files.map(async f => {
-            const absPath = path.resolve(dest, d, f.path)
+            const absPath = path.resolve(packagesDir, d, f.path)
             await getFs().writeFile(absPath, f.contents, { mode: f.mode })
         }))
     }
