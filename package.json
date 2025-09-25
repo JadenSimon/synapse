@@ -4,7 +4,7 @@
     "bin": "./src/cli/index.ts",
     "dependencies": {
         "esbuild": "^0.20.2",
-        "typescript": "~5.4.5",
+        "typescript": "~5.5.4",
         "postject": "github:Cohesible/postject"
     },
     "devDependencies": {
@@ -34,7 +34,7 @@
         },
         "pipeline": {
             "dependsOn": ["synapse-aws", "synapse-local"],
-            "compile": "(SYNAPSE_PIPELINE_DEPS='' synapse compile) && synapse deploy src/cli/install.ts",
+            "compile": "(SYNAPSE_PIPELINE_DEPS='' synapse compile --host-target linux-x64) && synapse deploy src/cli/install.ts",
             "publish": "synapse run src/cli/buildInternal.ts -- --sea --downloadOnly --visibility public --pipelined ${{ stepKeyHash }}"
         }
     }
