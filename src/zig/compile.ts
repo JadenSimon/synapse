@@ -873,7 +873,7 @@ async function compileZig(file: string, opt: ResolvedProgramConfig, target: Comp
 
     const builtinFilename = await writeSynapseBuiltin({
         features: {
-            fast_calls: true,
+            fast_calls: false,
             threadpool_schedule: false,
             slightly_faster_buffers: false,
         }
