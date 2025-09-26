@@ -3,7 +3,7 @@ import * as path from 'node:path'
 import * as fsExt from './fs-ext.zig'
 
 function canUseFsExt() {
-    return false // process.release.name === 'node-synapse'
+    return process.release.name === 'node-synapse'
 }
 
 export function fastCopyDir(src: string, dst: string) {
