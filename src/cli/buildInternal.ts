@@ -995,7 +995,7 @@ export async function internalBundle(target?: string, opt: any = {}) {
             bt.workingDirectory,
             { 
                 ...resolved,
-                os: resolved.os as any, 
+                os: resolved.os as any,
                 sea: true, 
                 external, 
                 minify: isProdBuild, 
