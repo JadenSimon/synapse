@@ -385,7 +385,7 @@ export async function bundleExecutable(
     const transpiler = createTranspiler(mountedFs, resolver, {})
 
     const sourceFileName = path.resolve(workingDirectory, target).replace('.js', '.bundled.js')
-    const res = await transpiler.transpile(
+    const res = await transpiler.transpile( 
         sourceFileName,
         contents,
         outfile,
